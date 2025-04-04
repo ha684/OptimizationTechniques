@@ -157,7 +157,7 @@ class CustomTTSModel(TTSModel):
         assert self._TTSModel__net_g is not None, "Model not loaded correctly, net_g is None"
         self.inner_infer_model = InnerInferModel(self._TTSModel__net_g, self.device, self.hyper_parameters)
         try:
-            self.compiled_inner_infer = torch.compile(self.inner_infer_model,mode="reduce-overhead")
+            self.compiled_inner_infer = torch.compile(self.inner_infer_model,backend="cudagraphs",mode="reduce-overhead")
         except Exception as e:
             print(f"Failed to compile model: {e}")
             self.compiled_inner_infer = None
