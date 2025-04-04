@@ -160,18 +160,21 @@ class CustomTTSModel(TTSModel):
         try:
             self.compiled_inner_infer = torch.compile(self.inner_infer_model)
             print("Warming up compiled model...")
-            for _ in range(2):
+            for i in range(2):
+                start = time.time()
                 self._warmup_compiled_model()
+                print(f"Warmup time for iteration {i} is {time.time() - start:.2f} seconds")
             print("Warmup complete")
             self.use_compile = True
         except Exception as e:
             print(f"Failed to compile model: {e}")
             self.compiled_inner_infer = None
             self.use_compile = False
+            self.use_compile = False
             
     def _warmup_compiled_model(self):
         """Run a complete forward pass to ensure the model is fully compiled"""
-        sample_text = "テスト"
+        sample_text = "You can deploy models to the managed inferencing solution, for both real-time and batch deployments, abstracting away the infrastructure management typically required for deploying models."
         language = Languages.JP
         style_id = 0
         style_vector = self._TTSModel__get_style_vector(style_id, 1.0)
