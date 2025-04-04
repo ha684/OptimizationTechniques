@@ -29,6 +29,9 @@ from pathlib import Path
 from huggingface_hub import hf_hub_download
 import time
 from style_bert_vits2.nlp import bert_models
+import unicodedata
+import torch.compiler
+torch.compiler.allow_in_graph(unicodedata.normalize)
 
 bert_models.load_model(Languages.JP, "ku-nlp/deberta-v2-large-japanese-char-wwm")
 bert_models.load_tokenizer(Languages.JP, "ku-nlp/deberta-v2-large-japanese-char-wwm")
