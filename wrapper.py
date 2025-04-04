@@ -41,7 +41,7 @@ class InnerInferModel(torch.nn.Module):
         noise_scale: float,
         noise_scale_w: float,
         length_scale: float,
-        sid: int,  # In the original Bert-VITS2, its speaker_name: str, but here it's id
+        sid: int, 
         language: Languages,
         hps: HyperParameters,
         net_g: Union[SynthesizerTrn, SynthesizerTrnJPExtra],
