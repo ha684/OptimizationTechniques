@@ -141,7 +141,8 @@ class InnerInferModel(torch.nn.Module):
 class CustomTTSModel(TTSModel):
     def __init__(self, model_path: Path, config_path: Union[Path, HyperParameters], style_vec_path: Union[Path, NDArray[Any]], device: str) -> None:
         super().__init__(model_path, config_path, style_vec_path, device)
-        self.inner_infer_model = InnerInferModel(self.__net_g, self.device, self.hyper_parameters)
+        # Fix: Access the parent class's private attribute correctly
+        self.inner_infer_model = InnerInferModel(self._TTSModel__net_g, self.device, self.hyper_parameters)
         self.compiled_inner_infer = torch.compile(self.inner_infer_model)
     
     def _original_infer_implementation(
@@ -170,7 +171,7 @@ class CustomTTSModel(TTSModel):
                 sid=speaker_id,
                 language=language,
                 hps=self.hyper_parameters,
-                net_g=self.__net_g,
+                net_g=self._TTSModel__net_g,  # Fixed attribute access
                 device=self.device,
                 assist_text=assist_text,
                 assist_text_weight=assist_text_weight,
@@ -207,7 +208,7 @@ class CustomTTSModel(TTSModel):
                 sid=speaker_id,
                 language=language,
                 hps=self.hyper_parameters,
-                net_g=self.__net_g,
+                net_g=self._TTSModel__net_g,  # Fixed attribute access
                 device=self.device,
                 assist_text=assist_text,
                 assist_text_weight=assist_text_weight,
@@ -249,14 +250,14 @@ class CustomTTSModel(TTSModel):
         if assist_text == "" or not use_assist_text:
             assist_text = None
 
-        if self.__net_g is None:
+        if self._TTSModel__net_g is None:  # Fixed attribute access
             self.load()
-        assert self.__net_g is not None
+        assert self._TTSModel__net_g is not None  # Fixed attribute access
         if reference_audio_path is None:
             style_id = self.style2id[style]
-            style_vector = self.__get_style_vector(style_id, style_weight)
+            style_vector = self._TTSModel__get_style_vector(style_id, style_weight)  # Fixed method access
         else:
-            style_vector = self.__get_style_vector_from_audio(
+            style_vector = self._TTSModel__get_style_vector_from_audio(  # Fixed method access
                 reference_audio_path, style_weight
             )
         
@@ -416,7 +417,7 @@ class CustomTTSModel(TTSModel):
                 pitch_scale=pitch_scale,
                 intonation_scale=intonation_scale,
             )
-        audio = self.__convert_to_16_bit_wav(audio)
+        audio = self._TTSModel__convert_to_16_bit_wav(audio)  # Fixed method access
         return (self.hyper_parameters.data.sampling_rate, audio)
     
 def main(text, compare_methods=True, num_iterations=3):
