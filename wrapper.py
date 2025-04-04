@@ -52,37 +52,29 @@ class InnerInferModel(torch.nn.Module):
         self.device = device
         self.hps = hps
         
-    def forward(
+    def preprocess_text(
         self,
         text: str,
-        style_vec: NDArray[Any],
-        sdp_ratio: float,
-        noise_scale: float,
-        noise_scale_w: float,
-        length_scale: float,
-        sid: int, 
         language: Languages,
-        hps: HyperParameters,
-        net_g: Union[SynthesizerTrn, SynthesizerTrnJPExtra],
-        device: str,
-        skip_start: bool = False,
-        skip_end: bool = False,
         assist_text: Optional[str] = None,
         assist_text_weight: float = 0.7,
         given_phone: Optional[list[str]] = None,
         given_tone: Optional[list[int]] = None,
+        skip_start: bool = False,
+        skip_end: bool = False,
     ):
-        is_jp_extra = hps.version.endswith("JP-Extra")
+        # Call get_text outside of forward
         bert, ja_bert, en_bert, phones, tones, lang_ids = get_text(
             text,
             language,
-            hps,
-            device,
+            self.hps,
+            self.device,
             assist_text=assist_text,
             assist_text_weight=assist_text_weight,
             given_phone=given_phone,
             given_tone=given_tone,
         )
+        
         if skip_start:
             phones = phones[3:]
             tones = tones[3:]
@@ -90,6 +82,7 @@ class InnerInferModel(torch.nn.Module):
             bert = bert[:, 3:]
             ja_bert = ja_bert[:, 3:]
             en_bert = en_bert[:, 3:]
+            
         if skip_end:
             phones = phones[:-2]
             tones = tones[:-2]
@@ -97,19 +90,34 @@ class InnerInferModel(torch.nn.Module):
             bert = bert[:, :-2]
             ja_bert = ja_bert[:, :-2]
             en_bert = en_bert[:, :-2]
+            
+        return bert, ja_bert, en_bert, phones, tones, lang_ids
+    
+    def forward(
+        self,
+        bert, ja_bert, en_bert, phones, tones, lang_ids,
+        style_vec: NDArray[Any],
+        sdp_ratio: float,
+        noise_scale: float,
+        noise_scale_w: float,
+        length_scale: float,
+        sid: int,
+    ):
+        is_jp_extra = self.hps.version.endswith("JP-Extra")
+        
         with torch.no_grad():
-            x_tst = phones.to(device).unsqueeze(0)
-            tones = tones.to(device).unsqueeze(0)
-            lang_ids = lang_ids.to(device).unsqueeze(0)
-            bert = bert.to(device).unsqueeze(0)
-            ja_bert = ja_bert.to(device).unsqueeze(0)
-            en_bert = en_bert.to(device).unsqueeze(0)
-            x_tst_lengths = torch.LongTensor([phones.size(0)]).to(device)
-            style_vec_tensor = torch.from_numpy(style_vec).to(device).unsqueeze(0)
-            del phones
-            sid_tensor = torch.LongTensor([sid]).to(device)
+            x_tst = phones.to(self.device).unsqueeze(0)
+            tones = tones.to(self.device).unsqueeze(0)
+            lang_ids = lang_ids.to(self.device).unsqueeze(0)
+            bert = bert.to(self.device).unsqueeze(0)
+            ja_bert = ja_bert.to(self.device).unsqueeze(0)
+            en_bert = en_bert.to(self.device).unsqueeze(0)
+            x_tst_lengths = torch.LongTensor([phones.size(0)]).to(self.device)
+            style_vec_tensor = torch.from_numpy(style_vec).to(self.device).unsqueeze(0)
+            sid_tensor = torch.LongTensor([sid]).to(self.device)
+            
             if is_jp_extra:
-                output = cast(SynthesizerTrnJPExtra, net_g).infer(
+                output = cast(SynthesizerTrnJPExtra, self.net_g).infer(
                     x_tst,
                     x_tst_lengths,
                     sid_tensor,
@@ -123,7 +131,7 @@ class InnerInferModel(torch.nn.Module):
                     length_scale=length_scale,
                 )
             else:
-                output = cast(SynthesizerTrn, net_g).infer(
+                output = cast(SynthesizerTrn, self.net_g).infer(
                     x_tst,
                     x_tst_lengths,
                     sid_tensor,
@@ -138,20 +146,8 @@ class InnerInferModel(torch.nn.Module):
                     noise_scale_w=noise_scale_w,
                     length_scale=length_scale,
                 )
+                
             audio = output[0][0, 0].data.cpu().float().numpy()
-            del (
-                x_tst,
-                tones,
-                lang_ids,
-                bert,
-                x_tst_lengths,
-                sid_tensor,
-                ja_bert,
-                en_bert,
-                style_vec,
-            )  # , emo
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
             return audio
     
 class CustomTTSModel(TTSModel):
@@ -214,22 +210,13 @@ class CustomTTSModel(TTSModel):
     ) -> NDArray[Any]:
         """The compiled infer implementation using torch.compile"""
         with torch.no_grad():
+            bert, ja_bert, en_bert, phones, tones, lang_ids = self.inner_infer_model.preprocess_text(
+                text, language, assist_text, assist_text_weight, given_phone, given_tone
+            )
             audio = self.compiled_inner_infer(
-                text=text,
-                style_vec=style_vector,
-                sdp_ratio=sdp_ratio,
-                noise_scale=noise,
-                noise_scale_w=noise_w,
-                length_scale=length,
-                sid=speaker_id,
-                language=language,
-                hps=self.hyper_parameters,
-                net_g=self._TTSModel__net_g,  # Fixed attribute access
-                device=self.device,
-                assist_text=assist_text,
-                assist_text_weight=assist_text_weight,
-                given_phone=given_phone,
-                given_tone=given_tone,
+                bert, ja_bert, en_bert, phones, tones, lang_ids,
+                style_vector, sdp_ratio, noise, noise_w, 
+                length, speaker_id
             )
             return audio
     
