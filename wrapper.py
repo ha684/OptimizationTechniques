@@ -28,7 +28,20 @@ from style_bert_vits2.models.infer import get_text, cast, infer
 from pathlib import Path
 from huggingface_hub import hf_hub_download
 import time
+from style_bert_vits2.nlp import bert_models
 
+bert_models.load_model(Languages.JP, "ku-nlp/deberta-v2-large-japanese-char-wwm")
+bert_models.load_tokenizer(Languages.JP, "ku-nlp/deberta-v2-large-japanese-char-wwm")
+model_file = "jvnv-F1-jp/jvnv-F1-jp_e160_s14000.safetensors"
+config_file = "jvnv-F1-jp/config.json"
+style_file = "jvnv-F1-jp/style_vectors.npy"
+
+for file in [model_file, config_file, style_file]:
+    print(f"Downloading {file}...")
+    hf_hub_download("litagin/style_bert_vits2_jvnv", file, local_dir="model_assets")
+    
+assets_root = Path("model_assets")
+print("Model files downloaded. Initializing model...")
 class InnerInferModel(torch.nn.Module):
     def __init__(self, net_g, device, hps):
         super().__init__()
@@ -421,16 +434,6 @@ class CustomTTSModel(TTSModel):
         return (self.hyper_parameters.data.sampling_rate, audio)
     
 def main(text, compare_methods=True, num_iterations=3):
-    model_file = "jvnv-F1-jp/jvnv-F1-jp_e160_s14000.safetensors"
-    config_file = "jvnv-F1-jp/config.json"
-    style_file = "jvnv-F1-jp/style_vectors.npy"
-
-    for file in [model_file, config_file, style_file]:
-        print(f"Downloading {file}...")
-        hf_hub_download("litagin/style_bert_vits2_jvnv", file, local_dir="model_assets")
-        
-    assets_root = Path("model_assets")
-    print("Model files downloaded. Initializing model...")
 
     model = CustomTTSModel(
         model_path=assets_root / model_file,
