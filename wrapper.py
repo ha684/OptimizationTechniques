@@ -157,7 +157,7 @@ class CustomTTSModel(TTSModel):
         assert self._TTSModel__net_g is not None, "Model not loaded correctly, net_g is None"
         
         try:
-            self.inner_infer = torch.compile(self._TTSModel__net_g,dynamic=True)
+            self.inner_infer = torch.compile(self._TTSModel__net_g,fullgraph=True)
             # print("Warming up compiled model...")
             # for i in range(3):
             #     start = time.time()
