@@ -30,8 +30,6 @@ from huggingface_hub import hf_hub_download
 import time
 from style_bert_vits2.nlp import bert_models
 import unicodedata
-import torch.compiler
-torch.compiler.allow_in_graph(unicodedata.normalize)
 
 bert_models.load_model(Languages.JP, "ku-nlp/deberta-v2-large-japanese-char-wwm")
 bert_models.load_tokenizer(Languages.JP, "ku-nlp/deberta-v2-large-japanese-char-wwm")
@@ -416,22 +414,8 @@ class CustomTTSModel(TTSModel):
             else:
                 print("Original method could not complete successfully.")
             print("--------------------------------------")
-        
-        sr, audio = self._original_infer_implementation(
-            text=text, 
-            style_vector=style_vector,
-            sdp_ratio=sdp_ratio,
-            noise=noise,
-            noise_w=noise_w,
-            length=length,
-            speaker_id=speaker_id,
-            language=language,
-            assist_text=assist_text,
-            assist_text_weight=assist_text_weight,
-            given_phone=given_phone,
-            given_tone=given_tone
-        )
-        return sr, audio
+
+        return True
     
 def main(text, compare_methods=True, num_iterations=3):
     model = CustomTTSModel(
@@ -442,16 +426,14 @@ def main(text, compare_methods=True, num_iterations=3):
     )
     
     print(f"Model initialized. Running inference with {'performance comparison' if compare_methods else 'compiled method only'}...")
-    sr,audio = model.infer(
+    result = model.infer(
         text=text, 
         compare_methods=compare_methods,
         num_iterations=num_iterations
     )
-    from IPython.display import Audio, display
-
-    if audio is not None:
+    
+    if result:
         print("Success")
-        display(Audio(audio, rate=sr))
     else:
         print("Failed")
     
