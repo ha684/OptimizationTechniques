@@ -32,8 +32,6 @@ from style_bert_vits2.nlp import bert_models
 import unicodedata
 import torch.compiler
 torch.compiler.allow_in_graph(unicodedata.normalize)
-import torch._dynamo
-torch._dynamo.config.suppress_errors = True
 
 bert_models.load_model(Languages.JP, "ku-nlp/deberta-v2-large-japanese-char-wwm")
 bert_models.load_tokenizer(Languages.JP, "ku-nlp/deberta-v2-large-japanese-char-wwm")
@@ -118,7 +116,6 @@ class InnerInferModel(torch.nn.Module):
             style_vec_tensor = torch.from_numpy(style_vec).to(self.device).unsqueeze(0)
             sid_tensor = torch.LongTensor([sid]).to(self.device)
             
-            # The crucial part - store net_g locally to prevent it from becoming None
             net_g = self.net_g
             
             if is_jp_extra:
@@ -158,14 +155,14 @@ class InnerInferModel(torch.nn.Module):
 class CustomTTSModel(TTSModel):
     def __init__(self, model_path: Path, config_path: Union[Path, HyperParameters], style_vec_path: Union[Path, NDArray[Any]], device: str) -> None:
         super().__init__(model_path, config_path, style_vec_path, device)
-        # Load the model explicitly before compilation
         self.load()
-        # Make sure net_g is not None
         assert self._TTSModel__net_g is not None, "Model not loaded correctly, net_g is None"
-        # Create a new instance with a copy of the model
         self.inner_infer_model = InnerInferModel(self._TTSModel__net_g, self.device, self.hyper_parameters)
-        # Compile the model
-        self.compiled_inner_infer = torch.compile(self.inner_infer_model)
+        try:
+            self.compiled_inner_infer = torch.compile(self.inner_infer_model,mode="reduce-overhead")
+        except Exception as e:
+            print(f"Failed to compile model: {e}")
+            self.compiled_inner_infer = None
     
     def _original_infer_implementation(
         self,
@@ -193,7 +190,7 @@ class CustomTTSModel(TTSModel):
                 sid=speaker_id,
                 language=language,
                 hps=self.hyper_parameters,
-                net_g=self._TTSModel__net_g,  # Fixed attribute access
+                net_g=self._TTSModel__net_g,
                 device=self.device,
                 assist_text=assist_text,
                 assist_text_weight=assist_text_weight,
@@ -220,10 +217,8 @@ class CustomTTSModel(TTSModel):
     ) -> NDArray[Any]:
         """The compiled infer implementation using torch.compile"""
         with torch.no_grad():
-            # Make sure net_g is not None even here
             if self._TTSModel__net_g is None:
                 self.load()
-                # Re-initialize inner model if needed
                 if not hasattr(self, 'inner_infer_model') or self.inner_infer_model.net_g is None:
                     self.inner_infer_model = InnerInferModel(self._TTSModel__net_g, self.device, self.hyper_parameters)
                     self.compiled_inner_infer = torch.compile(self.inner_infer_model)
@@ -291,24 +286,22 @@ class CustomTTSModel(TTSModel):
         if assist_text == "" or not use_assist_text:
             assist_text = None
 
-        if self._TTSModel__net_g is None:  # Fixed attribute access
+        if self._TTSModel__net_g is None:
             self.load()
-        assert self._TTSModel__net_g is not None  # Fixed attribute access
+        assert self._TTSModel__net_g is not None
         if reference_audio_path is None:
             style_id = self.style2id[style]
-            style_vector = self._TTSModel__get_style_vector(style_id, style_weight)  # Fixed method access
+            style_vector = self._TTSModel__get_style_vector(style_id, style_weight)
         else:
-            style_vector = self._TTSModel__get_style_vector_from_audio(  # Fixed method access
+            style_vector = self._TTSModel__get_style_vector_from_audio(
                 reference_audio_path, style_weight
             )
         
-        # Perform timing comparison if requested
         if compare_methods:
             original_times = []
             compiled_times = []
             print("\n--- Starting performance comparison ---")
             
-            # First run of both methods to warm up (JIT compilation, caching, etc.)
             print("Warming up original method...")
             try:
                 _ = self._original_infer_implementation(
@@ -377,10 +370,6 @@ class CustomTTSModel(TTSModel):
                 except Exception as e:
                     print(f"  Original method failed: {e}")
                 
-                # Free up memory
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                
                 # Time compiled inference
                 if use_compiled:
                     start_time = time.time()
@@ -405,12 +394,7 @@ class CustomTTSModel(TTSModel):
                     except Exception as e:
                         print(f"  Compiled method failed: {e}")
                         use_compiled = False
-                
-                # Free up memory
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-            
-            # Calculate and display statistics
+
             if original_times:
                 avg_original = sum(original_times) / len(original_times)
                 print(f"\nOriginal method average time: {avg_original:.4f} seconds")
@@ -432,10 +416,24 @@ class CustomTTSModel(TTSModel):
             else:
                 print("Original method could not complete successfully.")
             print("--------------------------------------")
-        return True
+        
+        sr, audio = self._original_infer_implementation(
+            text=text, 
+            style_vector=style_vector,
+            sdp_ratio=sdp_ratio,
+            noise=noise,
+            noise_w=noise_w,
+            length=length,
+            speaker_id=speaker_id,
+            language=language,
+            assist_text=assist_text,
+            assist_text_weight=assist_text_weight,
+            given_phone=given_phone,
+            given_tone=given_tone
+        )
+        return sr, audio
     
 def main(text, compare_methods=True, num_iterations=3):
-
     model = CustomTTSModel(
         model_path=assets_root / model_file,
         config_path=assets_root / config_file,
@@ -444,14 +442,16 @@ def main(text, compare_methods=True, num_iterations=3):
     )
     
     print(f"Model initialized. Running inference with {'performance comparison' if compare_methods else 'compiled method only'}...")
-    result = model.infer(
+    sr,audio = model.infer(
         text=text, 
         compare_methods=compare_methods,
         num_iterations=num_iterations
     )
-    
-    if result:
+    from IPython.display import Audio, display
+
+    if audio is not None:
         print("Success")
+        display(Audio(audio, rate=sr))
     else:
         print("Failed")
     
