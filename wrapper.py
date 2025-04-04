@@ -160,11 +160,14 @@ class CustomTTSModel(TTSModel):
         try:
             self.compiled_inner_infer = torch.compile(self.inner_infer_model)
             print("Warming up compiled model...")
-            self._warmup_compiled_model()
+            for _ in range(2):
+                self._warmup_compiled_model()
             print("Warmup complete")
+            self.use_compile = True
         except Exception as e:
             print(f"Failed to compile model: {e}")
             self.compiled_inner_infer = None
+            self.use_compile = False
             
     def _warmup_compiled_model(self):
         """Run a complete forward pass to ensure the model is fully compiled"""
@@ -297,7 +300,7 @@ class CustomTTSModel(TTSModel):
         compare_methods: bool = True,
         num_iterations: int = 3,
     ) -> tuple[int, NDArray[Any]]:
-        use_compiled: bool = True
+        use_compiled: bool = self.use_compile
         if language != "JP" and self.hyper_parameters.version.endswith("JP-Extra"):
             raise ValueError(
                 "The model is trained with JP-Extra, but the language is not JP"
@@ -322,53 +325,10 @@ class CustomTTSModel(TTSModel):
             original_times = []
             compiled_times = []
             print("\n--- Starting performance comparison ---")
-            
-            print("Warming up original method...")
-            try:
-                _ = self._original_infer_implementation(
-                    text=text, 
-                    style_vector=style_vector,
-                    sdp_ratio=sdp_ratio,
-                    noise=noise,
-                    noise_w=noise_w,
-                    length=length,
-                    speaker_id=speaker_id,
-                    language=language,
-                    assist_text=assist_text,
-                    assist_text_weight=assist_text_weight,
-                    given_phone=given_phone,
-                    given_tone=given_tone
-                )
-            except Exception as e:
-                print(f"Error in original method warm-up: {e}")
-            
-            print("Warming up compiled method...")
-            try:
-                _ = self._compiled_infer_implementation(
-                    text=text, 
-                    style_vector=style_vector,
-                    sdp_ratio=sdp_ratio,
-                    noise=noise,
-                    noise_w=noise_w,
-                    length=length,
-                    speaker_id=speaker_id,
-                    language=language,
-                    assist_text=assist_text,
-                    assist_text_weight=assist_text_weight,
-                    given_phone=given_phone,
-                    given_tone=given_tone
-                )
-            except Exception as e:
-                print(f"Error in compiled method warm-up: {e}")
-                print("Disabling compiled method for comparison")
-                use_compiled = False
-            
-            # Run multiple iterations to get meaningful timing data
             print(f"Running {num_iterations} iterations for each method...")
             for i in range(num_iterations):
                 print(f"Iteration {i+1}/{num_iterations}")
-                
-                # Time original inference
+
                 start_time = time.time()
                 try:
                     _ = self._original_infer_implementation(
@@ -390,8 +350,7 @@ class CustomTTSModel(TTSModel):
                     print(f"  Original method: {original_time:.4f} seconds")
                 except Exception as e:
                     print(f"  Original method failed: {e}")
-                
-                # Time compiled inference
+
                 if use_compiled:
                     start_time = time.time()
                     try:
