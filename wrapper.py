@@ -158,7 +158,7 @@ class CustomTTSModel(TTSModel):
         self.inner_infer_model = InnerInferModel(self._TTSModel__net_g, self.device, self.hyper_parameters)
         
         try:
-            self.compiled_inner_infer = torch.compile(self.inner_infer_model, fullgraph=True)
+            self.compiled_inner_infer = torch.compile(self.inner_infer_model)
             print("Warming up compiled model...")
             self._warmup_compiled_model()
             print("Warmup complete")
