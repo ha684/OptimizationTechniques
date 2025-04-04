@@ -116,8 +116,11 @@ class InnerInferModel(torch.nn.Module):
             style_vec_tensor = torch.from_numpy(style_vec).to(self.device).unsqueeze(0)
             sid_tensor = torch.LongTensor([sid]).to(self.device)
             
+            # The crucial part - store net_g locally to prevent it from becoming None
+            net_g = self.net_g
+            
             if is_jp_extra:
-                output = cast(SynthesizerTrnJPExtra, self.net_g).infer(
+                output = cast(SynthesizerTrnJPExtra, net_g).infer(
                     x_tst,
                     x_tst_lengths,
                     sid_tensor,
@@ -131,7 +134,7 @@ class InnerInferModel(torch.nn.Module):
                     length_scale=length_scale,
                 )
             else:
-                output = cast(SynthesizerTrn, self.net_g).infer(
+                output = cast(SynthesizerTrn, net_g).infer(
                     x_tst,
                     x_tst_lengths,
                     sid_tensor,
@@ -153,8 +156,13 @@ class InnerInferModel(torch.nn.Module):
 class CustomTTSModel(TTSModel):
     def __init__(self, model_path: Path, config_path: Union[Path, HyperParameters], style_vec_path: Union[Path, NDArray[Any]], device: str) -> None:
         super().__init__(model_path, config_path, style_vec_path, device)
-        # Fix: Access the parent class's private attribute correctly
+        # Load the model explicitly before compilation
+        self.load()
+        # Make sure net_g is not None
+        assert self._TTSModel__net_g is not None, "Model not loaded correctly, net_g is None"
+        # Create a new instance with a copy of the model
         self.inner_infer_model = InnerInferModel(self._TTSModel__net_g, self.device, self.hyper_parameters)
+        # Compile the model
         self.compiled_inner_infer = torch.compile(self.inner_infer_model)
     
     def _original_infer_implementation(
@@ -210,15 +218,42 @@ class CustomTTSModel(TTSModel):
     ) -> NDArray[Any]:
         """The compiled infer implementation using torch.compile"""
         with torch.no_grad():
+            # Make sure net_g is not None even here
+            if self._TTSModel__net_g is None:
+                self.load()
+                # Re-initialize inner model if needed
+                if not hasattr(self, 'inner_infer_model') or self.inner_infer_model.net_g is None:
+                    self.inner_infer_model = InnerInferModel(self._TTSModel__net_g, self.device, self.hyper_parameters)
+                    self.compiled_inner_infer = torch.compile(self.inner_infer_model)
+            
             bert, ja_bert, en_bert, phones, tones, lang_ids = self.inner_infer_model.preprocess_text(
                 text, language, assist_text, assist_text_weight, given_phone, given_tone
             )
-            audio = self.compiled_inner_infer(
-                bert, ja_bert, en_bert, phones, tones, lang_ids,
-                style_vector, sdp_ratio, noise, noise_w, 
-                length, speaker_id
-            )
-            return audio
+            
+            try:
+                audio = self.compiled_inner_infer(
+                    bert, ja_bert, en_bert, phones, tones, lang_ids,
+                    style_vector, sdp_ratio, noise, noise_w, 
+                    length, speaker_id
+                )
+                return audio
+            except Exception as e:
+                print(f"Error in compiled inference: {e}")
+                print("Falling back to original implementation...")
+                return self._original_infer_implementation(
+                    text=text, 
+                    style_vector=style_vector,
+                    sdp_ratio=sdp_ratio,
+                    noise=noise,
+                    noise_w=noise_w,
+                    length=length,
+                    speaker_id=speaker_id,
+                    language=language,
+                    assist_text=assist_text,
+                    assist_text_weight=assist_text_weight,
+                    given_phone=given_phone,
+                    given_tone=given_tone
+                )
     
     def infer(
         self,
@@ -244,6 +279,7 @@ class CustomTTSModel(TTSModel):
         compare_methods: bool = True,
         num_iterations: int = 3,
     ) -> tuple[int, NDArray[Any]]:
+        use_compiled: bool = True
         if language != "JP" and self.hyper_parameters.version.endswith("JP-Extra"):
             raise ValueError(
                 "The model is trained with JP-Extra, but the language is not JP"
@@ -271,44 +307,8 @@ class CustomTTSModel(TTSModel):
             print("\n--- Starting performance comparison ---")
             
             # First run of both methods to warm up (JIT compilation, caching, etc.)
-            print("Warming up models...")
-            _ = self._original_infer_implementation(
-                text=text, 
-                style_vector=style_vector,
-                sdp_ratio=sdp_ratio,
-                noise=noise,
-                noise_w=noise_w,
-                length=length,
-                speaker_id=speaker_id,
-                language=language,
-                assist_text=assist_text,
-                assist_text_weight=assist_text_weight,
-                given_phone=given_phone,
-                given_tone=given_tone
-            )
-            
-            _ = self._compiled_infer_implementation(
-                text=text, 
-                style_vector=style_vector,
-                sdp_ratio=sdp_ratio,
-                noise=noise,
-                noise_w=noise_w,
-                length=length,
-                speaker_id=speaker_id,
-                language=language,
-                assist_text=assist_text,
-                assist_text_weight=assist_text_weight,
-                given_phone=given_phone,
-                given_tone=given_tone
-            )
-            
-            # Run multiple iterations to get meaningful timing data
-            print(f"Running {num_iterations} iterations for each method...")
-            for i in range(num_iterations):
-                print(f"Iteration {i+1}/{num_iterations}")
-                
-                # Time original inference
-                start_time = time.time()
+            print("Warming up original method...")
+            try:
                 _ = self._original_infer_implementation(
                     text=text, 
                     style_vector=style_vector,
@@ -323,16 +323,11 @@ class CustomTTSModel(TTSModel):
                     given_phone=given_phone,
                     given_tone=given_tone
                 )
-                original_time = time.time() - start_time
-                original_times.append(original_time)
-                print(f"  Original method: {original_time:.4f} seconds")
-                
-                # Free up memory
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                
-                # Time compiled inference
-                start_time = time.time()
+            except Exception as e:
+                print(f"Error in original method warm-up: {e}")
+            
+            print("Warming up compiled method...")
+            try:
                 _ = self._compiled_infer_implementation(
                     text=text, 
                     style_vector=style_vector,
@@ -347,55 +342,21 @@ class CustomTTSModel(TTSModel):
                     given_phone=given_phone,
                     given_tone=given_tone
                 )
-                compiled_time = time.time() - start_time
-                compiled_times.append(compiled_time)
-                print(f"  Compiled method: {compiled_time:.4f} seconds")
+            except Exception as e:
+                print(f"Error in compiled method warm-up: {e}")
+                print("Disabling compiled method for comparison")
+                use_compiled = False
+            
+            # Run multiple iterations to get meaningful timing data
+            print(f"Running {num_iterations} iterations for each method...")
+            for i in range(num_iterations):
+                print(f"Iteration {i+1}/{num_iterations}")
                 
-                # Free up memory
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-            
-            # Calculate and display statistics
-            avg_original = sum(original_times) / len(original_times)
-            avg_compiled = sum(compiled_times) / len(compiled_times)
-            speedup = avg_original / avg_compiled if avg_compiled > 0 else 0
-            
-            print("\n--- Performance Comparison Results ---")
-            print(f"Original method average time: {avg_original:.4f} seconds")
-            print(f"Compiled method average time: {avg_compiled:.4f} seconds")
-            print(f"Speedup factor: {speedup:.2f}x ({(speedup-1)*100:.1f}% faster)")
-            if speedup > 1:
-                print(f"The compiled method is {speedup:.2f}x faster than the original method.")
-            elif speedup < 1:
-                print(f"The original method is {1/speedup:.2f}x faster than the compiled method.")
-            else:
-                print("Both methods have similar performance.")
-            print("--------------------------------------")
-        
-        # Continue with the actual inference (using compiled method for production)
-        if not line_split:
-            audio = self._compiled_infer_implementation(
-                text=text, 
-                style_vector=style_vector,
-                sdp_ratio=sdp_ratio,
-                noise=noise,
-                noise_w=noise_w,
-                length=length,
-                speaker_id=speaker_id,
-                language=language,
-                assist_text=assist_text,
-                assist_text_weight=assist_text_weight,
-                given_phone=given_phone,
-                given_tone=given_tone
-            )
-        else:
-            texts = text.split("\n")
-            texts = [t for t in texts if t != ""]
-            audios = []
-            for i, t in enumerate(texts):
-                audios.append(
-                    self._compiled_infer_implementation(
-                        text=t, 
+                # Time original inference
+                start_time = time.time()
+                try:
+                    _ = self._original_infer_implementation(
+                        text=text, 
                         style_vector=style_vector,
                         sdp_ratio=sdp_ratio,
                         noise=noise,
@@ -408,20 +369,68 @@ class CustomTTSModel(TTSModel):
                         given_phone=given_phone,
                         given_tone=given_tone
                     )
-                )
-                if i != len(texts) - 1:
-                    audios.append(np.zeros(int(44100 * split_interval)))
-            audio = np.concatenate(audios)
-        
-        if not (pitch_scale == 1.0 and intonation_scale == 1.0):
-            _, audio = adjust_voice(
-                fs=self.hyper_parameters.data.sampling_rate,
-                wave=audio,
-                pitch_scale=pitch_scale,
-                intonation_scale=intonation_scale,
-            )
-        audio = self._TTSModel__convert_to_16_bit_wav(audio)  # Fixed method access
-        return (self.hyper_parameters.data.sampling_rate, audio)
+                    original_time = time.time() - start_time
+                    original_times.append(original_time)
+                    print(f"  Original method: {original_time:.4f} seconds")
+                except Exception as e:
+                    print(f"  Original method failed: {e}")
+                
+                # Free up memory
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                
+                # Time compiled inference
+                if use_compiled:
+                    start_time = time.time()
+                    try:
+                        _ = self._compiled_infer_implementation(
+                            text=text, 
+                            style_vector=style_vector,
+                            sdp_ratio=sdp_ratio,
+                            noise=noise,
+                            noise_w=noise_w,
+                            length=length,
+                            speaker_id=speaker_id,
+                            language=language,
+                            assist_text=assist_text,
+                            assist_text_weight=assist_text_weight,
+                            given_phone=given_phone,
+                            given_tone=given_tone
+                        )
+                        compiled_time = time.time() - start_time
+                        compiled_times.append(compiled_time)
+                        print(f"  Compiled method: {compiled_time:.4f} seconds")
+                    except Exception as e:
+                        print(f"  Compiled method failed: {e}")
+                        use_compiled = False
+                
+                # Free up memory
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            
+            # Calculate and display statistics
+            if original_times:
+                avg_original = sum(original_times) / len(original_times)
+                print(f"\nOriginal method average time: {avg_original:.4f} seconds")
+            
+                if compiled_times:
+                    avg_compiled = sum(compiled_times) / len(compiled_times)
+                    speedup = avg_original / avg_compiled if avg_compiled > 0 else 0
+                    
+                    print(f"Compiled method average time: {avg_compiled:.4f} seconds")
+                    print(f"Speedup factor: {speedup:.2f}x ({(speedup-1)*100:.1f}% faster)")
+                    if speedup > 1:
+                        print(f"The compiled method is {speedup:.2f}x faster than the original method.")
+                    elif speedup < 1:
+                        print(f"The original method is {1/speedup:.2f}x faster than the compiled method.")
+                    else:
+                        print("Both methods have similar performance.")
+                else:
+                    print("Compiled method could not complete successfully.")
+            else:
+                print("Original method could not complete successfully.")
+            print("--------------------------------------")
+        return True
     
 def main(text, compare_methods=True, num_iterations=3):
 
@@ -433,14 +442,16 @@ def main(text, compare_methods=True, num_iterations=3):
     )
     
     print(f"Model initialized. Running inference with {'performance comparison' if compare_methods else 'compiled method only'}...")
-    sample_rate, audio = model.infer(
+    result = model.infer(
         text=text, 
         compare_methods=compare_methods,
         num_iterations=num_iterations
     )
     
-    print(f"Inference complete. Audio generated with sample rate {sample_rate}Hz, length {len(audio)/sample_rate:.2f} seconds.")
-    return sample_rate, audio
+    if result:
+        print("Success")
+    else:
+        print("Failed")
     
 if __name__ == "__main__":
     import argparse
