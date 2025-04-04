@@ -156,12 +156,43 @@ class CustomTTSModel(TTSModel):
         self.load()
         assert self._TTSModel__net_g is not None, "Model not loaded correctly, net_g is None"
         self.inner_infer_model = InnerInferModel(self._TTSModel__net_g, self.device, self.hyper_parameters)
+        
         try:
-            self.compiled_inner_infer = torch.compile(self.inner_infer_model)
+            self.compiled_inner_infer = torch.compile(self.inner_infer_model, fullgraph=True)
+            print("Warming up compiled model...")
+            self._warmup_compiled_model()
+            print("Warmup complete")
         except Exception as e:
             print(f"Failed to compile model: {e}")
             self.compiled_inner_infer = None
-    
+            
+    def _warmup_compiled_model(self):
+        """Run a complete forward pass to ensure the model is fully compiled"""
+        sample_text = "テスト"
+        language = Languages.JP
+        style_id = 0
+        style_vector = self._TTSModel__get_style_vector(style_id, 1.0)
+        
+        sdp_ratio = DEFAULT_SDP_RATIO
+        noise = DEFAULT_NOISE
+        noise_w = DEFAULT_NOISEW
+        length = DEFAULT_LENGTH
+        speaker_id = 0
+        
+        with torch.no_grad():
+            bert, ja_bert, en_bert, phones, tones, lang_ids = self.inner_infer_model.preprocess_text(
+                sample_text, language, assist_text=None, assist_text_weight=DEFAULT_ASSIST_TEXT_WEIGHT
+            )
+            
+            _ = self.compiled_inner_infer(
+                bert, ja_bert, en_bert, phones, tones, lang_ids,
+                style_vector, sdp_ratio, noise, noise_w, 
+                length, speaker_id
+            )
+            
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+                
     def _original_infer_implementation(
         self,
         text: str,
@@ -178,25 +209,24 @@ class CustomTTSModel(TTSModel):
         given_tone: Optional[list[int]] = None,
     ) -> NDArray[Any]:
         """The original infer implementation using the imported infer function"""
-        with torch.no_grad():
-            audio = infer(
-                text=text,
-                sdp_ratio=sdp_ratio,
-                noise_scale=noise,
-                noise_scale_w=noise_w,
-                length_scale=length,
-                sid=speaker_id,
-                language=language,
-                hps=self.hyper_parameters,
-                net_g=self._TTSModel__net_g,
-                device=self.device,
-                assist_text=assist_text,
-                assist_text_weight=assist_text_weight,
-                style_vec=style_vector,
-                given_phone=given_phone,
-                given_tone=given_tone,
-            )
-            return audio
+        audio = infer(
+            text=text,
+            sdp_ratio=sdp_ratio,
+            noise_scale=noise,
+            noise_scale_w=noise_w,
+            length_scale=length,
+            sid=speaker_id,
+            language=language,
+            hps=self.hyper_parameters,
+            net_g=self._TTSModel__net_g,
+            device=self.device,
+            assist_text=assist_text,
+            assist_text_weight=assist_text_weight,
+            style_vec=style_vector,
+            given_phone=given_phone,
+            given_tone=given_tone,
+        )
+        return audio
     
     def _compiled_infer_implementation(
         self,
@@ -214,41 +244,34 @@ class CustomTTSModel(TTSModel):
         given_tone: Optional[list[int]] = None,
     ) -> NDArray[Any]:
         """The compiled infer implementation using torch.compile"""
-        with torch.no_grad():
-            if self._TTSModel__net_g is None:
-                self.load()
-                if not hasattr(self, 'inner_infer_model') or self.inner_infer_model.net_g is None:
-                    self.inner_infer_model = InnerInferModel(self._TTSModel__net_g, self.device, self.hyper_parameters)
-                    self.compiled_inner_infer = torch.compile(self.inner_infer_model)
-            
-            bert, ja_bert, en_bert, phones, tones, lang_ids = self.inner_infer_model.preprocess_text(
-                text, language, assist_text, assist_text_weight, given_phone, given_tone
+        bert, ja_bert, en_bert, phones, tones, lang_ids = self.inner_infer_model.preprocess_text(
+            text, language, assist_text, assist_text_weight, given_phone, given_tone
+        )
+        
+        try:
+            audio = self.compiled_inner_infer(
+                bert, ja_bert, en_bert, phones, tones, lang_ids,
+                style_vector, sdp_ratio, noise, noise_w, 
+                length, speaker_id
             )
-            
-            try:
-                audio = self.compiled_inner_infer(
-                    bert, ja_bert, en_bert, phones, tones, lang_ids,
-                    style_vector, sdp_ratio, noise, noise_w, 
-                    length, speaker_id
-                )
-                return audio
-            except Exception as e:
-                print(f"Error in compiled inference: {e}")
-                print("Falling back to original implementation...")
-                return self._original_infer_implementation(
-                    text=text, 
-                    style_vector=style_vector,
-                    sdp_ratio=sdp_ratio,
-                    noise=noise,
-                    noise_w=noise_w,
-                    length=length,
-                    speaker_id=speaker_id,
-                    language=language,
-                    assist_text=assist_text,
-                    assist_text_weight=assist_text_weight,
-                    given_phone=given_phone,
-                    given_tone=given_tone
-                )
+            return audio
+        except Exception as e:
+            print(f"Error in compiled inference: {e}")
+            print("Falling back to original implementation...")
+            return self._original_infer_implementation(
+                text=text, 
+                style_vector=style_vector,
+                sdp_ratio=sdp_ratio,
+                noise=noise,
+                noise_w=noise_w,
+                length=length,
+                speaker_id=speaker_id,
+                language=language,
+                assist_text=assist_text,
+                assist_text_weight=assist_text_weight,
+                given_phone=given_phone,
+                given_tone=given_tone
+            )
     
     def infer(
         self,
