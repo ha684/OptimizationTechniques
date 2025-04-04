@@ -251,7 +251,7 @@ class CustomTTSModel(TTSModel):
         given_tone: Optional[list[int]] = None,
     ) -> NDArray[Any]:
         """The compiled infer implementation using torch.compile"""
-        bert, ja_bert, en_bert, phones, tones, lang_ids = self.inner_infer_model.preprocess_text(
+        bert, ja_bert, en_bert, phones, tones, lang_ids = self.compiled_inner_infer.preprocess_text(
             text, language, assist_text, assist_text_weight, given_phone, given_tone
         )
         
