@@ -160,10 +160,10 @@ class CustomTTSModel(TTSModel):
         try:
             self.compiled_inner_infer = torch.compile(self.inner_infer_model)
             print("Warming up compiled model...")
-            for i in range(2):
+            for i in range(3):
                 start = time.time()
                 self._warmup_compiled_model()
-                print(f"Warmup time for iteration {i} is {time.time() - start:.2f} seconds")
+                print(f"Warmup time for iteration {i+1} is {time.time() - start:.2f} seconds")
             print("Warmup complete")
             self.use_compile = True
         except Exception as e:
@@ -329,13 +329,13 @@ class CustomTTSModel(TTSModel):
             compiled_times = []
             print("\n--- Starting performance comparison ---")
             print(f"Running {num_iterations} iterations for each method...")
-            for i in range(num_iterations):
+            for i in range(len(text)):
                 print(f"Iteration {i+1}/{num_iterations}")
 
                 start_time = time.time()
                 try:
                     _ = self._original_infer_implementation(
-                        text=text, 
+                        text=text[i], 
                         style_vector=style_vector,
                         sdp_ratio=sdp_ratio,
                         noise=noise,
@@ -358,7 +358,7 @@ class CustomTTSModel(TTSModel):
                     start_time = time.time()
                     try:
                         _ = self._compiled_infer_implementation(
-                            text=text, 
+                            text=text[i], 
                             style_vector=style_vector,
                             sdp_ratio=sdp_ratio,
                             noise=noise,
@@ -411,6 +411,15 @@ def main(text, compare_methods=True, num_iterations=3):
     )
     
     print(f"Model initialized. Running inference with {'performance comparison' if compare_methods else 'compiled method only'}...")
+    text = [
+        text,
+        "元気ですか？",
+        "hello how are you",
+        "Compare original vs compiled method performance",
+        "Number of iterations for performance comparison",
+        "Elasticsearch is a distributed search and analytics engine, scalable data store and vector database optimized for speed and relevance on production-scale workloads.",
+        "Elasticsearch is the foundation of Elastic’s open Stack platform. Search in near real-time over massive datasets, perform vector searches, integrate with generative AI applications, and much more."
+    ]
     result = model.infer(
         text=text, 
         compare_methods=compare_methods,
