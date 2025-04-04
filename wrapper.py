@@ -155,17 +155,18 @@ class CustomTTSModel(TTSModel):
         super().__init__(model_path, config_path, style_vec_path, device)
         self.load()
         assert self._TTSModel__net_g is not None, "Model not loaded correctly, net_g is None"
-        self.inner_infer_model = InnerInferModel(self._TTSModel__net_g, self.device, self.hyper_parameters)
         
         try:
-            self.compiled_inner_infer = torch.compile(self.inner_infer_model,dynamic=True)
-            print("Warming up compiled model...")
-            for i in range(3):
-                start = time.time()
-                self._warmup_compiled_model()
-                print(f"Warmup time for iteration {i+1} is {time.time() - start:.2f} seconds")
-            print("Warmup complete")
+            self.inner_infer = torch.compile(self._TTSModel__net_g,dynamic=True)
+            # print("Warming up compiled model...")
+            # for i in range(3):
+            #     start = time.time()
+            #     self._warmup_compiled_model()
+            #     print(f"Warmup time for iteration {i+1} is {time.time() - start:.2f} seconds")
+            # print("Warmup complete")
             self.use_compile = True
+            self.compiled_inner_infer = InnerInferModel(self.inner_infer, self.device, self.hyper_parameters)
+
         except Exception as e:
             print(f"Failed to compile model: {e}")
             self.compiled_inner_infer = None
