@@ -30,7 +30,6 @@ import time
 from style_bert_vits2.nlp import bert_models
 import onnxruntime as ort
 import os
-from onnx_wrapper import OnnxTTSModelWrapper
 
 bert_models.load_model(Languages.JP, "ku-nlp/deberta-v2-large-japanese-char-wwm")
 bert_models.load_tokenizer(Languages.JP, "ku-nlp/deberta-v2-large-japanese-char-wwm")
@@ -129,24 +128,14 @@ class InnerInferModel(torch.nn.Module):
             audio = output[0][0, 0].data.cpu().float().numpy()
             return audio
 class CustomTTSModel(TTSModel):
-    def __init__(self, model_path: Path, config_path: Union[Path, HyperParameters], 
-                 style_vec_path: Union[Path, NDArray[Any]], device: str) -> None:
+    def __init__(self, model_path: Path, config_path: Union[Path, HyperParameters], style_vec_path: Union[Path, NDArray[Any]], device: str) -> None:
         super().__init__(model_path, config_path, style_vec_path, device)
         self.load()
         assert self._TTSModel__net_g is not None, "Model not loaded correctly, net_g is None"
         self.inner_infer = torch.compile(self._TTSModel__net_g, fullgraph=True, backend="onnxrt")
         self.use_compile = True
         self.compiled_inner_infer = InnerInferModel(self.inner_infer, self.device, self.hyper_parameters)
-        
-        # ONNX support
-        self.onnx_wrapper = None
-        self.max_sequence_length = 1024  # Adjust based on your needs
-        
-    def export_to_onnx(self, output_path: str):
-        """Export the model to ONNX format"""
-        self.onnx_wrapper = OnnxTTSModelWrapper(self, self.max_sequence_length)
-        self.onnx_wrapper.export_model(output_path)
-        
+    
     def _compiled_infer_implementation(
         self,
         text: str,
@@ -170,41 +159,6 @@ class CustomTTSModel(TTSModel):
             bert, ja_bert, en_bert, phones, tones, lang_ids,
             style_vector, sdp_ratio, noise, noisew, 
             length, speaker_id
-        )
-        return audio
-        
-    def _onnx_infer_implementation(
-        self,
-        text: str,
-        style_vector: NDArray[Any],
-        sdp_ratio: float,
-        noise: float,
-        noisew: float,
-        length: float,
-        speaker_id: int,
-        language: Languages,
-        assist_text: Optional[str] = None,
-        assist_text_weight: float = DEFAULT_ASSIST_TEXT_WEIGHT,
-        given_phone: Optional[list[str]] = None,
-        given_tone: Optional[list[int]] = None,
-    ) -> NDArray[Any]:
-        """The ONNX infer implementation"""
-        if self.onnx_wrapper is None:
-            raise ValueError("ONNX model not exported. Call export_to_onnx first.")
-        
-        audio = self.onnx_wrapper.infer(
-            text=text,
-            language=language,
-            style_vector=style_vector,
-            sdp_ratio=sdp_ratio,
-            noise=noise,
-            noise_w=noisew,
-            length=length,
-            speaker_id=speaker_id,
-            assist_text=assist_text,
-            assist_text_weight=assist_text_weight,
-            given_phone=given_phone,
-            given_tone=given_tone
         )
         return audio
 
@@ -231,9 +185,8 @@ class CustomTTSModel(TTSModel):
         intonation_scale: float = 1.0,
         compare_methods: bool = True,
         num_iterations: int = 3,
-        use_onnx: bool = False,
     ) -> tuple[int, NDArray[Any]]:
-        use_compiled: bool = self.use_compile and not use_onnx
+        use_compiled: bool = self.use_compile
         
         if language != "JP" and self.hyper_parameters.version.endswith("JP-Extra"):
             raise ValueError(
@@ -257,14 +210,10 @@ class CustomTTSModel(TTSModel):
             
         if compare_methods:
             compiled_times = []
-            onnx_times = []
-            
             print("\n--- Starting performance comparison ---")
             print(f"Running {num_iterations} iterations for each method...")
             test_texts = text if isinstance(text, list) else [text]
-            
             for text_item in test_texts:
-                # Compiled method
                 if use_compiled:
                     start_time = time.time()
                     try:
@@ -287,50 +236,14 @@ class CustomTTSModel(TTSModel):
                         print(f"  Compiled method: {compiled_time:.4f} seconds")
                     except Exception as e:
                         print(f"  Compiled method failed: {e}")
-                
-                # ONNX method
-                if self.onnx_wrapper is not None:
-                    start_time = time.time()
-                    try:
-                        _ = self._onnx_infer_implementation(
-                            text=text_item, 
-                            style_vector=style_vector,
-                            sdp_ratio=sdp_ratio,
-                            noise=noise,
-                            noisew=noise_w,
-                            length=length,
-                            speaker_id=speaker_id,
-                            language=language,
-                            assist_text=assist_text,
-                            assist_text_weight=assist_text_weight,
-                            given_phone=given_phone,
-                            given_tone=given_tone
-                        )
-                        onnx_time = time.time() - start_time
-                        onnx_times.append(onnx_time)
-                        print(f"  ONNX method: {onnx_time:.4f} seconds")
-                    except Exception as e:
-                        print(f"  ONNX method failed: {e}")
-            
             print("\n--- Performance Summary ---")
             if compiled_times:
                 avg_compiled = sum(compiled_times) / len(compiled_times)                    
                 print(f"Compiled method average time: {avg_compiled:.4f} seconds")
-            if onnx_times:
-                avg_onnx = sum(onnx_times) / len(onnx_times)
-                print(f"ONNX method average time: {avg_onnx:.4f} seconds")
-                if compiled_times:
-                    speedup = avg_compiled / avg_onnx if avg_onnx > 0 else float('inf')
-                    print(f"ONNX speedup: {speedup:.2f}x")
             print("--------------------------------------")
-            
-        # Do actual inference with the selected method
-        if use_onnx and self.onnx_wrapper is not None:
-            return True  # Replace with actual inference if needed
-        else:
-            return True  # Replace with actual inference if needed
+        return True
 
-def main(text, compare_methods=True, num_iterations=3, export_onnx=True, use_onnx=False):
+def main(text, compare_methods=True, num_iterations=3):
     device = "cpu"
     model = CustomTTSModel(
         model_path=assets_root / model_file,
@@ -338,12 +251,6 @@ def main(text, compare_methods=True, num_iterations=3, export_onnx=True, use_onn
         style_vec_path=assets_root / style_file,
         device=device,
     )
-    
-    if export_onnx:
-        output_path = "model_assets/tts_model.onnx"
-        model.export_to_onnx(output_path)
-        print(f"ONNX model exported to {output_path}")
-    
     if not compare_methods:
         return
     else:
@@ -356,13 +263,12 @@ def main(text, compare_methods=True, num_iterations=3, export_onnx=True, use_onn
         result = model.infer(
             text=test_texts, 
             compare_methods=compare_methods,
-            num_iterations=num_iterations,
-            use_onnx=use_onnx
+            num_iterations=num_iterations
         )
         if result:
-            print("Inference completed successfully")
+            print("First inference run completed successfully")
         else:
-            print("Inference failed")
+            print("First inference run failed")
     
 if __name__ == "__main__":
     import argparse
@@ -370,13 +276,9 @@ if __name__ == "__main__":
     parser.add_argument("--text", type=str, help="Text to be converted to speech", default="こんにちは、元気ですか？")
     parser.add_argument("--compare", action="store_true", help="Compare inference method performance")
     parser.add_argument("--iterations", type=int, default=3, help="Number of iterations for performance comparison")
-    parser.add_argument("--export-onnx", action="store_true", help="Export the model to ONNX format")
-    parser.add_argument("--use-onnx", action="store_true", help="Use ONNX for inference")
     args = parser.parse_args()
     main(
         args.text, 
         args.compare, 
-        args.iterations,
-        args.export_onnx,
-        args.use_onnx
+        args.iterations
     )
