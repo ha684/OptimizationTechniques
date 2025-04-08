@@ -457,9 +457,9 @@ class CustomTTSModel(TTSModel):
 def main(text, compare_methods=True, num_iterations=3, export_only=False):
     device = "cpu"
     model = CustomTTSModel(
-        model_path=assets_root / Path(model_file).name,
-        config_path=assets_root / Path(config_file).name,
-        style_vec_path=assets_root / Path(style_file).name,
+        model_path=assets_root / model_file,
+        config_path=assets_root / config_file,
+        style_vec_path=assets_root / style_file,
         device=device,
     )
     
