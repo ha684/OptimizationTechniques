@@ -22,7 +22,7 @@ from style_bert_vits2.constants import (
 from style_bert_vits2.models.hyper_parameters import HyperParameters
 from style_bert_vits2.models.models import SynthesizerTrn
 from style_bert_vits2.models.models_jp_extra import (
-    SynthesizerTrnJPExtra,
+    SynthesizerTrn as SynthesizerTrnJPExtra,
 )
 from style_bert_vits2.models.infer import get_text, cast, infer
 from style_bert_vits2.nlp import bert_models

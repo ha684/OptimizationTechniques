@@ -265,7 +265,7 @@ class CustomTTSModel(TTSModel):
         # Create a wrapper for ONNX export.
         wrapper = OnnxWrapperModel(self._TTSModel__net_g, self.device, self.hyper_parameters).to(self.device)
         # Dummy inputs (update the dims if necessary)
-        seq_len = 50   # dummy sequence length
+        seq_len = 1024   # dummy sequence length
         emb_dim = 768  # dummy embedding dimension for ja_bert; adjust per model
         style_dim = 256  # dummy style vector dimension; adjust per model
         
