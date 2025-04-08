@@ -31,6 +31,7 @@ import time
 from style_bert_vits2.nlp import bert_models
 import unicodedata
 import onnxruntime as ort
+import os
 
 bert_models.load_model(Languages.JP, "ku-nlp/deberta-v2-large-japanese-char-wwm")
 bert_models.load_tokenizer(Languages.JP, "ku-nlp/deberta-v2-large-japanese-char-wwm")
@@ -156,13 +157,22 @@ class CustomTTSModel(TTSModel):
         super().__init__(model_path, config_path, style_vec_path, device)
         self.load()
         assert self._TTSModel__net_g is not None, "Model not loaded correctly, net_g is None"
-        
+    
         self.inner_infer = torch.compile(self._TTSModel__net_g,fullgraph=True,backend="onnxrt")
         self.use_compile = True
         self.compiled_inner_infer = InnerInferModel(self.inner_infer, self.device, self.hyper_parameters)
-        session_options = ort.SessionOptions()
-        session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        self.ort_session = ort.InferenceSession("style_bert_vits2_model.onnx", session_options)
+        
+    def load_onnx_model(
+        self,
+        path: Path
+    ):
+        if os.path.exists(path):
+            session_options = ort.SessionOptions()
+            session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            self.ort_session = ort.InferenceSession(path, session_options)
+            print("loaded")
+        else:
+            print("not exist")
     
     def _compiled_infer_implementation(
         self,
@@ -282,7 +292,8 @@ class CustomTTSModel(TTSModel):
             style_vector = self._TTSModel__get_style_vector_from_audio(
                 reference_audio_path, style_weight
             )
-        
+            
+        self.load_onnx_model("style_bert_vits2_model.onnx")
         if compare_methods:
             original_times = []
             compiled_times = []
@@ -501,7 +512,6 @@ def export_net_g_to_onnx(tts_model, output_path, device="cuda"):
 
 def main(text, compare_methods=True, num_iterations=3):
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    device = "cpu"
     print(f"Using device: {device}")
     
     model = CustomTTSModel(
@@ -510,7 +520,6 @@ def main(text, compare_methods=True, num_iterations=3):
         style_vec_path=assets_root / style_file,
         device=device,
     )
-    print(model)
     if not compare_methods:
         output_path = export_net_g_to_onnx(model, "style_bert_vits2_model.onnx",device)
     else:
