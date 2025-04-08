@@ -91,7 +91,6 @@ class ONNXExportWrapper(torch.nn.Module):
             x=x,
             x_lengths=x_lengths,
             sid=sid,
-            tones=tones,
             lang_ids=lang_ids, 
             ja_bert=ja_bert,
             style_vec=style_vec,
