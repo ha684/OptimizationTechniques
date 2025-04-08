@@ -116,13 +116,14 @@ class CustomSynthesizerTrn(SynthesizerTrn):
         bert = torch.randn(size=(x.shape[1], 1024)).cpu()
         ja_bert = torch.randn(size=(x.shape[1], 1024)).cpu()
         en_bert = torch.randn(size=(x.shape[1], 1024)).cpu()
+        basename = os.path.basename(path)
 
         if self.n_speakers > 0:
             g = self.emb_g(sid).unsqueeze(-1)  # [b, h, 1]
             torch.onnx.export(
                 self.emb_g,
                 (sid),
-                f"onnx/{path}/{path}_emb.onnx",
+                f"onnx/{basename}/{basename}_emb.onnx",
                 input_names=["sid"],
                 output_names=["g"],
                 verbose=True,
@@ -133,7 +134,7 @@ class CustomSynthesizerTrn(SynthesizerTrn):
         torch.onnx.export(
             self.enc_p,
             (x, x_lengths, tone, language, bert, ja_bert, en_bert, g),
-            f"onnx/{path}/{path}_enc_p.onnx",
+            f"onnx/{basename}/{basename}_enc_p.onnx",
             input_names=[
                 "x",
                 "x_lengths",
@@ -170,7 +171,7 @@ class CustomSynthesizerTrn(SynthesizerTrn):
         torch.onnx.export(
             self.sdp,
             (x, x_mask, zinput, g),
-            f"onnx/{path}/{path}_sdp.onnx",
+            f"onnx/{basename}/{basename}_sdp.onnx",
             input_names=["x", "x_mask", "zin", "g"],
             output_names=["logw"],
             dynamic_axes={"x": [0, 2], "x_mask": [0, 2], "zin": [0, 2], "logw": [0, 2]},
@@ -179,7 +180,7 @@ class CustomSynthesizerTrn(SynthesizerTrn):
         torch.onnx.export(
             self.dp,
             (x, x_mask, g),
-            f"onnx/{path}/{path}_dp.onnx",
+            f"onnx/{basename}/{basename}_dp.onnx",
             input_names=["x", "x_mask", "g"],
             output_names=["logw"],
             dynamic_axes={"x": [0, 2], "x_mask": [0, 2], "logw": [0, 2]},
@@ -208,7 +209,7 @@ class CustomSynthesizerTrn(SynthesizerTrn):
         torch.onnx.export(
             self.flow,
             (z_p, y_mask, g),
-            f"onnx/{path}/{path}_flow.onnx",
+            f"onnx/{basename}/{basename}_flow.onnx",
             input_names=["z_p", "y_mask", "g"],
             output_names=["z"],
             dynamic_axes={"z_p": [0, 2], "y_mask": [0, 2], "z": [0, 2]},
@@ -221,7 +222,7 @@ class CustomSynthesizerTrn(SynthesizerTrn):
         torch.onnx.export(
             self.dec,
             (z_in, g),
-            f"onnx/{path}/{path}_dec.onnx",
+            f"onnx/{basename}/{basename}_dec.onnx",
             input_names=["z_in", "g"],
             output_names=["o"],
             dynamic_axes={"z_in": [0, 2], "o": [0, 2]},
