@@ -6,7 +6,7 @@ from style_bert_vits2.models.models import SynthesizerTrn
 from typing import Any
 import torch
 import commons
-import Path
+from pathlib import Path
 class CustomSynthesizerTrn(SynthesizerTrn):
     def __init__(
         self, 
