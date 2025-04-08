@@ -30,6 +30,7 @@ import time
 from style_bert_vits2.nlp import bert_models
 import onnxruntime as ort
 import os
+from onnx_wrapper import OnnxTTSModelWrapper
 
 bert_models.load_model(Languages.JP, "ku-nlp/deberta-v2-large-japanese-char-wwm")
 bert_models.load_tokenizer(Languages.JP, "ku-nlp/deberta-v2-large-japanese-char-wwm")
