@@ -252,7 +252,7 @@ class CustomTTSModel(TTSModel):
         self._TTSModel__net_g.eval()
         wrapper = OnnxWrapperModel(self._TTSModel__net_g, self.device, self.hyper_parameters).to(self.device)
         # Dummy inputs: adjust dimensions as required by your model.
-        seq_len = 50   # Dummy sequence length.
+        seq_len = 1024   # Dummy sequence length.
         emb_dim = 1024  # Updated embedding dimension for ja_bert (changed from 768).
         style_dim = 256  # Dummy style vector dimension (adjust if needed).
 
