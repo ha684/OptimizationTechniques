@@ -396,9 +396,14 @@ def main(text, compare_methods=True, num_iterations=3, export_only=False):
         device=device,
     )
     
+    export_path = "BertVits"
+    if not os.path.exists("onnx"):
+        os.makedirs("onnx")
+    if not os.path.exists(f"onnx/{export_path}"):
+        os.makedirs(f"onnx/{export_path}")
+        
     if export_only:
         print("Exporting model to ONNX...")
-        export_path = assets_root / "BertVits"
         novq = False
         dev = False
         Extra = "japanese"
