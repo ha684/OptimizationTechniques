@@ -138,12 +138,7 @@ def export_model_to_onnx(
         )
     
     print(f"Loading model weights from {model_path}")
-    if torch.cuda.is_available():
-        state_dict = torch.load(model_path, map_location=device)
-    else:
-        state_dict = torch.load(model_path, map_location="cpu")
     
-    net_g.load_state_dict(state_dict["weight"], strict=False)
     net_g = net_g.to(device)
     net_g.eval()
     
