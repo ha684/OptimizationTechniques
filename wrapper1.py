@@ -4,6 +4,7 @@ import torch
 import numpy as np
 from pathlib import Path
 from huggingface_hub import hf_hub_download
+from utils import get_hparams_from_file, load_checkpoint
 
 from style_bert_vits2.constants import Languages
 from style_bert_vits2.models.hyper_parameters import HyperParameters
@@ -115,11 +116,7 @@ def export_model_to_onnx(
         config_path = Path(config_path)
     
     # Load hyper-parameters
-    hps = HyperParameters()
-    if config_path.exists():
-        hps.load_json(config_path)
-    else:
-        raise FileNotFoundError(f"Config file not found: {config_path}")
+    hps = get_hparams_from_file(config_path)
     
     # Load model
     print(f"Creating model instance with version: {hps.version}")
