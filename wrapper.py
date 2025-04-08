@@ -390,97 +390,94 @@ def export_net_g_to_onnx(tts_model, output_path, device="cuda"):
     
     # Create a wrapper class that has the same input interface as your compiled_inner_infer
     class NetGWrapper(torch.nn.Module):
-        def __init__(self, net_g, is_jp_extra, device):
+        def __init__(self, net_g):
             super().__init__()
             self.net_g = net_g
-            self.is_jp_extra = is_jp_extra
-            self.device = device
             
-        def forward(self, bert, ja_bert, en_bert, phones, tones, lang_ids,
-                  style_vec, sdp_ratio, noise_scale, noise_scale_w, length_scale, sid):
-            # Prepare inputs similar to your InnerInferModel.forward
-            x_tst = phones.unsqueeze(0)
-            x_tst_lengths = torch.LongTensor([phones.size(0)]).to(self.device)
-            sid_tensor = torch.LongTensor([sid]).to(self.device)
-            style_vec_tensor = style_vec.unsqueeze(0)
-            
-            # Call infer based on model type
-            if self.is_jp_extra:
-                output = self.net_g.infer(
-                    x_tst,
-                    x_tst_lengths,
-                    sid_tensor,
-                    tones.unsqueeze(0),
-                    lang_ids.unsqueeze(0),
-                    ja_bert.unsqueeze(0),
-                    style_vec=style_vec_tensor,
-                    sdp_ratio=sdp_ratio,
-                    noise_scale=noise_scale,
-                    noise_scale_w=noise_scale_w,
-                    length_scale=length_scale,
-                )
-            else:
-                output = self.net_g.infer(
-                    x_tst,
-                    x_tst_lengths,
-                    sid_tensor,
-                    tones.unsqueeze(0),
-                    lang_ids.unsqueeze(0),
-                    bert.unsqueeze(0),
-                    ja_bert.unsqueeze(0),
-                    en_bert.unsqueeze(0),
-                    style_vec=style_vec_tensor,
-                    sdp_ratio=sdp_ratio,
-                    noise_scale=noise_scale,
-                    noise_scale_w=noise_scale_w,
-                    length_scale=length_scale,
-                )
-            
-            # Return just the audio waveform
-            return output[0][0, 0]  # Extract the audio from output tuple
+        def forward(self, x_tst, x_tst_lengths, sid, tones, lang_ids, ja_bert, style_vec, 
+                   sdp_ratio, noise_scale, noise_scale_w, length_scale):
+            """
+            Forward method that matches the SynthesizerTrnJPExtra.infer method signature
+            for JP-Extra models
+            """
+            # Call the infer method directly
+            output = self.net_g.infer(
+                x_tst, 
+                x_tst_lengths,
+                sid,
+                tones,
+                lang_ids,
+                ja_bert,
+                style_vec=style_vec,
+                sdp_ratio=sdp_ratio,
+                noise_scale=noise_scale,
+                noise_scale_w=noise_scale_w,
+                length_scale=length_scale
+            )
+            return output[0]  # Return just the audio
     
     # Create the wrapper instance
-    wrapper = NetGWrapper(net_g, is_jp_extra, device)
+    wrapper = NetGWrapper(net_g)
     
-    # Get sample inputs from a short text (similar to how you'd call preprocess_text)
-    # This is to get actual shape and content for ONNX tracing
-    inner_model = InnerInferModel(net_g, device, tts_model.hyper_parameters)
-    sample_text = "テスト"  # Short test text
-    bert, ja_bert, en_bert, phones, tones, lang_ids = inner_model.preprocess_text(
-        sample_text, Languages.JP
-    )
+    seq_len = 10
     
-    # Create example inputs for tracing
-    style_vector = np.zeros((768,), dtype=np.float32)  # Adjust size as needed
-    sdp_ratio = DEFAULT_SDP_RATIO
-    noise_scale = DEFAULT_NOISE
-    noise_scale_w = DEFAULT_NOISEW
-    length_scale = DEFAULT_LENGTH
-    sid = 0
+    # Basic input tensors
+    x_tst = torch.zeros((1, seq_len), dtype=torch.long).to(device)
+    x_tst_lengths = torch.LongTensor([seq_len]).to(device)
+    sid = torch.LongTensor([0]).to(device)
+    tones = torch.zeros((1, seq_len), dtype=torch.long).to(device)
+    lang_ids = torch.zeros((1, seq_len), dtype=torch.long).to(device)
     
-    # Convert numpy/scalar values to tensors
-    style_vec_tensor = torch.from_numpy(style_vector).float().to(device)
-    sdp_ratio_tensor = torch.tensor(sdp_ratio, dtype=torch.float32).to(device)
-    noise_scale_tensor = torch.tensor(noise_scale, dtype=torch.float32).to(device)
-    noise_scale_w_tensor = torch.tensor(noise_scale_w, dtype=torch.float32).to(device)
-    length_scale_tensor = torch.tensor(length_scale, dtype=torch.float32).to(device)
-    sid_tensor = torch.tensor(sid, dtype=torch.int64).to(device)
+    # BERT embeddings - adjust dimensions based on your model
+    bert_dim = 1024  # This might need adjustment
+    ja_bert = torch.zeros((1, seq_len, bert_dim), dtype=torch.float32).to(device)
+    
+    # Style vector - use the actual dimension from the model
+    # Based on the error, style_vec seems to expect 256 as the first dimension
+    style_vec = torch.zeros((1, 256), dtype=torch.float32).to(device)
+    
+    # Control parameters
+    sdp_ratio = torch.tensor([DEFAULT_SDP_RATIO], dtype=torch.float32).to(device)
+    noise_scale = torch.tensor([DEFAULT_NOISE], dtype=torch.float32).to(device)
+    noise_scale_w = torch.tensor([DEFAULT_NOISEW], dtype=torch.float32).to(device)
+    length_scale = torch.tensor([DEFAULT_LENGTH], dtype=torch.float32).to(device)
     
     # Define input names
     input_names = [
-        "bert", "ja_bert", "en_bert", "phones", "tones", "lang_ids",
-        "style_vec", "sdp_ratio", "noise_scale", "noise_scale_w", "length_scale", "sid"
+        "x_tst", "x_tst_lengths", "sid", "tones", "lang_ids", "ja_bert", "style_vec",
+        "sdp_ratio", "noise_scale", "noise_scale_w", "length_scale"
     ]
     
     # Define output names
     output_names = ["audio"]
     
+    # Try to trace the model with the dummy inputs
+    try:
+        with torch.no_grad():
+            dummy_output = wrapper(
+                x_tst, x_tst_lengths, sid, tones, lang_ids, ja_bert, style_vec,
+                sdp_ratio, noise_scale, noise_scale_w, length_scale
+            )
+        print(f"Dummy forward pass successful, output shape: {dummy_output.shape}")
+    except Exception as e:
+        print(f"Error during dummy forward pass: {e}")
+        print("Adjusting input shapes...")
+        
+        # Try to examine the style_proj layer to get correct dimensions
+        if hasattr(net_g, "enc_p") and hasattr(net_g.enc_p, "style_proj"):
+            style_proj_weight = net_g.enc_p.style_proj.weight
+            print(f"Style projection weight shape: {style_proj_weight.shape}")
+            
+            # Correctly size the style_vec based on actual weight dimensions
+            in_features = style_proj_weight.shape[1]
+            style_vec = torch.zeros((1, in_features), dtype=torch.float32).to(device)
+            print(f"Adjusted style_vec shape to: {style_vec.shape}")
+    
     # Export to ONNX
     torch.onnx.export(
         wrapper,
-        (bert, ja_bert, en_bert, phones, tones, lang_ids,
-         style_vec_tensor, sdp_ratio_tensor, noise_scale_tensor, noise_scale_w_tensor, 
-         length_scale_tensor, sid_tensor),
+        (x_tst, x_tst_lengths, sid, tones, lang_ids, ja_bert, style_vec,
+         sdp_ratio, noise_scale, noise_scale_w, length_scale),
         output_path,
         export_params=True,
         opset_version=16,
@@ -488,13 +485,11 @@ def export_net_g_to_onnx(tts_model, output_path, device="cuda"):
         input_names=input_names,
         output_names=output_names,
         dynamic_axes={
-            "bert": {0: "seq_len"},
-            "ja_bert": {0: "seq_len"},
-            "en_bert": {0: "seq_len"},
-            "phones": {0: "seq_len"},
-            "tones": {0: "seq_len"},
-            "lang_ids": {0: "seq_len"},
-            "audio": {0: "audio_len"}
+            "x_tst": {1: "seq_len"},
+            "tones": {1: "seq_len"},
+            "lang_ids": {1: "seq_len"},
+            "ja_bert": {1: "seq_len"},
+            "audio": {1: "audio_len", 2: "audio_channels"}
         }
     )
     
@@ -503,7 +498,7 @@ def export_net_g_to_onnx(tts_model, output_path, device="cuda"):
 
 def main(text, compare_methods=True, num_iterations=3):
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    device = "cpu"
+    # device = "cpu"
     print(f"Using device: {device}")
     
     model = CustomTTSModel(
