@@ -140,7 +140,7 @@ class CustomTTSModel(TTSModel):
         
         # ONNX support
         self.onnx_wrapper = None
-        self.max_sequence_length = 256  # Adjust based on your needs
+        self.max_sequence_length = 1024  # Adjust based on your needs
         
     def export_to_onnx(self, output_path: str):
         """Export the model to ONNX format"""
