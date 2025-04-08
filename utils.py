@@ -61,27 +61,55 @@ def download_checkpoint(
                 repo_id, file, local_dir=dir_path, local_dir_use_symlinks=False
             )
 
-
 def load_checkpoint(checkpoint_path, model, optimizer=None, skip_optimizer=False):
     assert os.path.isfile(checkpoint_path)
-    checkpoint_dict = torch.load(checkpoint_path, map_location="cpu",weights_only=True)
-    iteration = checkpoint_dict["iteration"]
-    learning_rate = checkpoint_dict["learning_rate"]
-    if (
-        optimizer is not None
-        and not skip_optimizer
-        and checkpoint_dict["optimizer"] is not None
-    ):
-        optimizer.load_state_dict(checkpoint_dict["optimizer"])
-    elif optimizer is None and not skip_optimizer:
-        # else:      Disable this line if Infer and resume checkpoint,then enable the line upper
-        new_opt_dict = optimizer.state_dict()
-        new_opt_dict_params = new_opt_dict["param_groups"][0]["params"]
-        new_opt_dict["param_groups"] = checkpoint_dict["optimizer"]["param_groups"]
-        new_opt_dict["param_groups"][0]["params"] = new_opt_dict_params
-        optimizer.load_state_dict(new_opt_dict)
-
-    saved_state_dict = checkpoint_dict["model"]
+    
+    # Handle safetensors files
+    if str(checkpoint_path).endswith('.safetensors'):
+        try:
+            from safetensors.torch import load_file
+            saved_state_dict = load_file(checkpoint_path)
+            # For safetensors, we don't have optimizer states, iteration, or learning rate
+            # Use default values or handle separately if needed
+            iteration = 0
+            learning_rate = 0.0
+            logger.info("Loaded safetensors file: {}".format(checkpoint_path))
+        except ImportError:
+            logger.info("safetensors package not found. Installing it...")
+            import subprocess
+            subprocess.check_call(['pip', 'install', 'safetensors'])
+            from safetensors.torch import load_file
+            saved_state_dict = load_file(checkpoint_path)
+            iteration = 0
+            learning_rate = 0.0
+            logger.info("Loaded safetensors file: {}".format(checkpoint_path))
+    else:
+        # Original PyTorch checkpoint loading
+        try:
+            checkpoint_dict = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        except:
+            # Fallback for older PyTorch versions
+            checkpoint_dict = torch.load(checkpoint_path, map_location="cpu")
+            
+        iteration = checkpoint_dict["iteration"]
+        learning_rate = checkpoint_dict["learning_rate"]
+        saved_state_dict = checkpoint_dict["model"]
+        
+        if (
+            optimizer is not None
+            and not skip_optimizer
+            and checkpoint_dict["optimizer"] is not None
+        ):
+            optimizer.load_state_dict(checkpoint_dict["optimizer"])
+        elif optimizer is None and not skip_optimizer:
+            # else:      Disable this line if Infer and resume checkpoint,then enable the line upper
+            new_opt_dict = optimizer.state_dict()
+            new_opt_dict_params = new_opt_dict["param_groups"][0]["params"]
+            new_opt_dict["param_groups"] = checkpoint_dict["optimizer"]["param_groups"]
+            new_opt_dict["param_groups"][0]["params"] = new_opt_dict_params
+            optimizer.load_state_dict(new_opt_dict)
+    
+    # Load model weights regardless of file format
     if hasattr(model, "module"):
         state_dict = model.module.state_dict()
     else:
