@@ -42,7 +42,7 @@ def prepare_dummy_inputs(hps, device="cuda:0" if torch.cuda.is_available() else 
     seq_len = 100  # Typical sequence length
     
     # Phone sequence
-    x_tst = torch.randint(0, hps.data.n_symbols, (1, seq_len)).to(device)
+    x_tst = torch.randint(0, len(symbols), (1, seq_len)).to(device)
     x_tst_lengths = torch.LongTensor([seq_len]).to(device)
     
     # Speaker ID
