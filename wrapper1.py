@@ -53,10 +53,10 @@ def prepare_dummy_inputs(hps, device="cuda:0" if torch.cuda.is_available() else 
     lang_ids = torch.ones(1, seq_len).long().to(device)
     
     # BERT embeddings
-    ja_bert = torch.randn(1, seq_len, hps.bert_embedding_dim).to(device)
+    ja_bert = torch.randn(1, seq_len, 768).to(device)
     
     # Style vector
-    style_vec = torch.randn(1, hps.style_vector_dim).to(device)
+    style_vec = torch.randn(1, 128).to(device)
     
     # Dynamic attributes
     sdp_ratio = torch.tensor([0.2], dtype=torch.float32).to(device)
