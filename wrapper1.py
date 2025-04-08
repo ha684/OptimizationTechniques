@@ -5,7 +5,7 @@ import numpy as np
 from pathlib import Path
 from huggingface_hub import hf_hub_download
 from utils import get_hparams_from_file, load_checkpoint
-
+from symbols import symbols
 from style_bert_vits2.constants import Languages
 from style_bert_vits2.models.hyper_parameters import HyperParameters
 from style_bert_vits2.models.models import SynthesizerTrn
@@ -122,7 +122,7 @@ def export_model_to_onnx(
     print(f"Creating model instance with version: {hps.version}")
     if hps.version.endswith("JP-Extra"):
         net_g = SynthesizerTrnJPExtra(
-            len(hps.symbols),
+            len(symbols),
             hps.data.filter_length // 2 + 1,
             hps.train.segment_size // hps.data.hop_length,
             n_speakers=hps.data.n_speakers,
