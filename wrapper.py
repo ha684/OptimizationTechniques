@@ -396,12 +396,29 @@ def export_to_onnx_with_padding(model, output_path, device="cpu", fixed_seq_len=
     # Pad tensors to fixed sequence length
     print(f"Original sequence lengths - phones: {phones.size(0)}, bert: {bert.size(1)}")
     
-    # For BERT embeddings, we need to ensure the middle dimension is exactly 1024
-    if bert.size(1) != 1024:
-        print(f"Resizing BERT embeddings from {bert.size(1)} to 1024 channels")
-        # If bert dimension is too large, truncate it. If too small, pad it.
-        bert = model.pad_to_fixed_length(bert, 1024, pad_dim=1)
-        ja_bert = model.pad_to_fixed_length(ja_bert, 1024, pad_dim=1)
+    # For BERT embeddings, we need to make sure the correct dimension is 1024
+    # In the error, we need the second dimension (index 1) to be 1024
+    # Let's examine the tensor shapes
+    print(f"BERT dimensions: {bert.shape}, expected middle dim to be 1024")
+    
+    # Create fresh tensors with proper dimensions
+    bert_dim = 1024
+    bert_features = bert.size(-1)  # Last dimension (features)
+    
+    # Create properly sized tensors
+    new_bert = torch.zeros((bert_dim, bert_features), device=bert.device, dtype=bert.dtype)
+    new_ja_bert = torch.zeros((bert_dim, bert_features), device=ja_bert.device, dtype=ja_bert.dtype)
+    
+    # Copy the data we have up to the minimum size
+    copy_size = min(bert.size(1), bert_dim)
+    new_bert[:copy_size, :] = bert[:, :copy_size, :].squeeze(0)
+    new_ja_bert[:copy_size, :] = ja_bert[:, :copy_size, :].squeeze(0)
+    
+    # Replace original tensors
+    bert = new_bert
+    ja_bert = new_ja_bert
+    
+    print(f"Resized BERT tensors to shape: {bert.shape}")
     
     # For sequence dimensions, pad to fixed length
     phones = model.pad_to_fixed_length(phones, fixed_seq_len)
@@ -483,18 +500,35 @@ def infer_with_padded_onnx(model, onnx_path, text, language=Languages.JP, speake
     orig_bert_dim = bert.size(1)
     print(f"Original dimensions - sequence: {orig_seq_len}, bert channels: {orig_bert_dim}")
     
-    # First handle BERT dimensions - must be exactly 1024
-    if bert.size(1) != 1024:
-        print(f"Resizing BERT embeddings from {bert.size(1)} to 1024 channels")
-        bert = model.pad_to_fixed_length(bert, 1024, pad_dim=1)
-        ja_bert = model.pad_to_fixed_length(ja_bert, 1024, pad_dim=1)
+    # First handle BERT dimensions - must be exactly 1024 in the middle dimension
+    print(f"BERT dimensions before resize: {bert.shape}")
+    
+    # Create fresh tensors with proper dimensions
+    bert_dim = 1024
+    bert_features = bert.size(-1)  # Last dimension (features)
+    
+    # Create properly sized tensors
+    new_bert = torch.zeros((bert_dim, bert_features), device=bert.device, dtype=bert.dtype)
+    new_ja_bert = torch.zeros((bert_dim, bert_features), device=ja_bert.device, dtype=ja_bert.dtype)
+    
+    # Copy the data we have up to the minimum size
+    copy_size = min(bert.size(1), bert_dim)
+    new_bert[:copy_size, :] = bert[:, :copy_size, :].squeeze(0)
+    new_ja_bert[:copy_size, :] = ja_bert[:, :copy_size, :].squeeze(0)
+    
+    # Replace original tensors
+    bert = new_bert
+    ja_bert = new_ja_bert
+    
+    print(f"Resized BERT tensors to shape: {bert.shape}")
     
     # Then handle sequence dimensions
     phones = model.pad_to_fixed_length(phones)
     tones = model.pad_to_fixed_length(tones)
     lang_ids = model.pad_to_fixed_length(lang_ids)
     
-    # Convert to numpy and add batch dimension
+    # Convert to numpy and handle dimensions correctly
+    # For BERT embeddings, they need to be in format [batch, 1024, features]
     bert_np = bert.cpu().numpy().astype(np.float32)
     ja_bert_np = ja_bert.cpu().numpy().astype(np.float32)
     phones_np = phones.cpu().numpy().astype(np.int64)
@@ -503,7 +537,7 @@ def infer_with_padded_onnx(model, onnx_path, text, language=Languages.JP, speake
     
     # Add batch dimension if not present
     if bert_np.ndim == 2:
-        bert_np = np.expand_dims(bert_np, 0)
+        bert_np = np.expand_dims(bert_np, 0)  # Shape should become [1, 1024, features]
     if ja_bert_np.ndim == 2:
         ja_bert_np = np.expand_dims(ja_bert_np, 0)
     if phones_np.ndim == 1:
@@ -512,6 +546,10 @@ def infer_with_padded_onnx(model, onnx_path, text, language=Languages.JP, speake
         tones_np = np.expand_dims(tones_np, 0)
     if lang_ids_np.ndim == 1:
         lang_ids_np = np.expand_dims(lang_ids_np, 0)
+    
+    # Double check BERT dimensions
+    if bert_np.shape[1] != 1024:
+        print(f"Warning: BERT still has wrong dimension! {bert_np.shape}")
         
     # Print shapes after padding for debugging
     print(f"Padded shapes - bert: {bert_np.shape}, ja_bert: {ja_bert_np.shape}, phones: {phones_np.shape}")
