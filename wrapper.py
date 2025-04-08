@@ -126,6 +126,33 @@ class InnerInferModel(torch.nn.Module):
             audio = output[0][0, 0]
             return audio
 
+class ONNXExportWrapper(torch.nn.Module):
+    """Simplified wrapper model for ONNX export to avoid control flow issues"""
+    def __init__(self, net_g):
+        super().__init__()
+        self.net_g = net_g
+        
+    def forward(self, 
+                x_tst, x_tst_lengths, sid, tones, lang_ids, ja_bert, 
+                style_vec, sdp_ratio, noise_scale, noise_scale_w, length_scale):
+        """Forward pass with flattened inputs to avoid control flow in ONNX export"""
+        # Call net_g's infer method directly with all inputs
+        output = self.net_g.infer(
+            x_tst,
+            x_tst_lengths,
+            sid,
+            tones,
+            lang_ids,
+            ja_bert,
+            style_vec=style_vec,
+            sdp_ratio=sdp_ratio,
+            noise_scale=noise_scale,
+            noise_scale_w=noise_scale_w,
+            length_scale=length_scale,
+        )
+        audio = output[0][0, 0]
+        return audio
+
 class CustomTTSModel(TTSModel):
     def __init__(self, model_path: Path, config_path: Union[Path, HyperParameters], style_vec_path: Union[Path, NDArray[Any]], device: str) -> None:
         super().__init__(model_path, config_path, style_vec_path, device)
@@ -141,10 +168,13 @@ class CustomTTSModel(TTSModel):
         self.onnx_path = assets_root / "model.onnx"
         self.onnx_session = None
         self.inner_model_for_export = InnerInferModel(self._TTSModel__net_g, self.device, self.hyper_parameters)
+        
+        # Create export wrapper for simplified ONNX export
+        self.export_wrapper = ONNXExportWrapper(self._TTSModel__net_g)
     
-    def export_to_onnx(self):
+    def export_to_onnx(self, force_export=False):
         """Export the model to ONNX format"""
-        if self.onnx_path.exists():
+        if self.onnx_path.exists() and not force_export:
             print(f"ONNX model already exists at {self.onnx_path}, skipping export")
             return self.onnx_path
         
@@ -156,49 +186,68 @@ class CustomTTSModel(TTSModel):
             dummy_text, Languages.JP
         )
         
+        # Set float32 data type for all tensors to ensure compatibility
+        bert = bert.float()
+        ja_bert = ja_bert.float()
+        en_bert = en_bert.float()
+        phones = phones.float()
+        tones = tones.float()
+        lang_ids = lang_ids.float()
+        
         style_id = self.style2id[DEFAULT_STYLE]
         style_vector = self._TTSModel__get_style_vector(style_id, DEFAULT_STYLE_WEIGHT)
-        style_vec_tensor = torch.from_numpy(style_vector).to(self.device).unsqueeze(0)
+        style_vec_tensor = torch.from_numpy(style_vector).to(self.device).float()
         sid_tensor = torch.LongTensor([0]).to(self.device)
         
-        # Set inputs for ONNX export
+        # Prepare direct inputs for the simplified wrapper model
+        x_tst = phones.unsqueeze(0)
+        x_tst_lengths = torch.LongTensor([phones.size(0)]).to(self.device)
+        tones_input = tones.unsqueeze(0)
+        lang_ids_input = lang_ids.unsqueeze(0)
+        ja_bert_input = ja_bert.unsqueeze(0)
+        style_vec_input = style_vec_tensor.unsqueeze(0)
+        
+        # Scalar inputs as torch tensors with consistent dtype
+        sdp_ratio_tensor = torch.tensor(DEFAULT_SDP_RATIO, dtype=torch.float32, device=self.device)
+        noise_scale_tensor = torch.tensor(DEFAULT_NOISE, dtype=torch.float32, device=self.device)
+        noise_scale_w_tensor = torch.tensor(DEFAULT_NOISEW, dtype=torch.float32, device=self.device)
+        length_scale_tensor = torch.tensor(DEFAULT_LENGTH, dtype=torch.float32, device=self.device)
+        
+        # Set inputs for ONNX export - using the simplified wrapper
         dummy_inputs = (
-            bert, 
-            ja_bert, 
-            en_bert, 
-            phones, 
-            tones, 
-            lang_ids,
-            style_vec_tensor, 
-            DEFAULT_SDP_RATIO,
-            DEFAULT_NOISE, 
-            DEFAULT_NOISEW, 
-            DEFAULT_LENGTH,
-            sid_tensor
+            x_tst,
+            x_tst_lengths,
+            sid_tensor,
+            tones_input, 
+            lang_ids_input,
+            ja_bert_input,
+            style_vec_input,
+            sdp_ratio_tensor,
+            noise_scale_tensor,
+            noise_scale_w_tensor,
+            length_scale_tensor
         )
         
-        # Export model to ONNX
+        # Export model to ONNX with simplified wrapper
         try:
+            # Set export to avoid control flow issues
             torch.onnx.export(
-                self.inner_model_for_export,
+                self.export_wrapper,
                 dummy_inputs,
                 self.onnx_path,
                 export_params=True,
-                opset_version=15,
+                opset_version=14,  # Try a lower opset version
                 do_constant_folding=True,
                 input_names=[
-                    'bert', 'ja_bert', 'en_bert', 'phones', 'tones', 'lang_ids',
-                    'style_vec', 'sdp_ratio', 'noise_scale', 'noise_scale_w', 
-                    'length_scale', 'sid'
+                    'x_tst', 'x_tst_lengths', 'sid', 'tones', 'lang_ids', 'ja_bert',
+                    'style_vec', 'sdp_ratio', 'noise_scale', 'noise_scale_w', 'length_scale'
                 ],
                 output_names=['audio'],
                 dynamic_axes={
-                    'bert': {1: 'seq_len'},
+                    'x_tst': {1: 'seq_len'},
+                    'tones': {1: 'seq_len'},
+                    'lang_ids': {1: 'seq_len'},
                     'ja_bert': {1: 'seq_len'},
-                    'en_bert': {1: 'seq_len'},
-                    'phones': {0: 'seq_len'},
-                    'tones': {0: 'seq_len'},
-                    'lang_ids': {0: 'seq_len'},
                     'audio': {0: 'audio_len'}
                 }
             )
@@ -206,28 +255,56 @@ class CustomTTSModel(TTSModel):
             return self.onnx_path
         except Exception as e:
             print(f"ONNX export failed: {e}")
-            return None
+            torch.onnx.export(
+                self.export_wrapper,
+                dummy_inputs,
+                self.onnx_path,
+                export_params=True,
+                opset_version=11,  # Try an even lower opset version
+                do_constant_folding=False,  # Disable constant folding
+                input_names=[
+                    'x_tst', 'x_tst_lengths', 'sid', 'tones', 'lang_ids', 'ja_bert',
+                    'style_vec', 'sdp_ratio', 'noise_scale', 'noise_scale_w', 'length_scale'
+                ],
+                output_names=['audio'],
+                dynamic_axes={
+                    'x_tst': {1: 'seq_len'},
+                    'tones': {1: 'seq_len'},
+                    'lang_ids': {1: 'seq_len'},
+                    'ja_bert': {1: 'seq_len'},
+                    'audio': {0: 'audio_len'}
+                }
+            )
+            print(f"ONNX export with fallback settings successful: {self.onnx_path}")
+            return self.onnx_path
     
     def load_onnx_session(self):
         """Load the ONNX model for inference"""
-        if not self.onnx_path.exists():
-            print("ONNX model does not exist. Exporting...")
-            self.export_to_onnx()
+        if not self.onnx_path.exists() or self.onnx_session is None:
+            path = self.export_to_onnx()
+            if path is None:
+                print("Failed to export ONNX model")
+                return None
             
-        if self.onnx_session is None:
             try:
                 # Create ONNX Runtime session
                 providers = ['CPUExecutionProvider']
                 if self.device.startswith('cuda'):
                     providers.insert(0, 'CUDAExecutionProvider')
                 
+                # Initialize session with options to fix the data type issues
+                session_options = ort.SessionOptions()
+                session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+                
                 self.onnx_session = ort.InferenceSession(
                     str(self.onnx_path), 
-                    providers=providers
+                    providers=providers,
+                    sess_options=session_options
                 )
                 print("ONNX session initialized successfully")
             except Exception as e:
                 print(f"Failed to load ONNX session: {e}")
+                return None
         return self.onnx_session
     
     def _compiled_infer_implementation(
@@ -275,7 +352,7 @@ class CustomTTSModel(TTSModel):
         given_phone: Optional[list[str]] = None,
         given_tone: Optional[list[int]] = None,
     ) -> NDArray[Any]:
-        """ONNX-based inference implementation"""
+        """ONNX-based inference implementation using the simplified model"""
         session = self.load_onnx_session()
         if session is None:
             raise RuntimeError("Failed to load ONNX session")
@@ -285,29 +362,53 @@ class CustomTTSModel(TTSModel):
             text, language, assist_text, assist_text_weight, given_phone, given_tone
         )
         
-        # Prepare inputs for ONNX
-        style_vec_tensor = torch.from_numpy(style_vector).to(self.device).unsqueeze(0)
-        sid_tensor = torch.LongTensor([speaker_id]).to(self.device)
+        # Convert all tensors to float32 to prevent type mismatches
+        x_tst = phones.float().unsqueeze(0).cpu().numpy()
+        x_tst_lengths = torch.LongTensor([phones.size(0)]).cpu().numpy()
+        tones_input = tones.float().unsqueeze(0).cpu().numpy()
+        lang_ids_input = lang_ids.float().unsqueeze(0).cpu().numpy()
+        ja_bert_input = ja_bert.float().unsqueeze(0).cpu().numpy()
         
-        # Convert tensors to numpy for ONNX Runtime
+        # Ensure style vector is float32
+        style_vec_input = torch.from_numpy(style_vector).float().unsqueeze(0).cpu().numpy()
+        sid_input = torch.LongTensor([speaker_id]).cpu().numpy()
+        
+        # Convert scalar parameters to numpy arrays with explicit dtype
+        sdp_ratio_input = np.array(sdp_ratio, dtype=np.float32)
+        noise_scale_input = np.array(noise, dtype=np.float32)
+        noise_scale_w_input = np.array(noisew, dtype=np.float32)
+        length_scale_input = np.array(length, dtype=np.float32)
+        
+        # Prepare inputs for ONNX Runtime
         onnx_inputs = {
-            'bert': bert.cpu().numpy(),
-            'ja_bert': ja_bert.cpu().numpy(),
-            'en_bert': en_bert.cpu().numpy(),
-            'phones': phones.cpu().numpy(),
-            'tones': tones.cpu().numpy(),
-            'lang_ids': lang_ids.cpu().numpy(),
-            'style_vec': style_vec_tensor.cpu().numpy(),
-            'sdp_ratio': np.array(sdp_ratio, dtype=np.float32),
-            'noise_scale': np.array(noise, dtype=np.float32),
-            'noise_scale_w': np.array(noisew, dtype=np.float32),
-            'length_scale': np.array(length, dtype=np.float32),
-            'sid': sid_tensor.cpu().numpy()
+            'x_tst': x_tst,
+            'x_tst_lengths': x_tst_lengths,
+            'sid': sid_input,
+            'tones': tones_input,
+            'lang_ids': lang_ids_input,
+            'ja_bert': ja_bert_input,
+            'style_vec': style_vec_input,
+            'sdp_ratio': sdp_ratio_input,
+            'noise_scale': noise_scale_input,
+            'noise_scale_w': noise_scale_w_input,
+            'length_scale': length_scale_input
         }
         
+        # Debug info for checking data types
+        for name, value in onnx_inputs.items():
+            print(f"ONNX input '{name}': shape={value.shape}, dtype={value.dtype}")
+        
         # Run inference
-        audio = session.run(['audio'], onnx_inputs)[0]
-        return audio
+        try:
+            audio = session.run(['audio'], onnx_inputs)[0]
+            return audio
+        except Exception as e:
+            print(f"ONNX inference error: {e}")
+            # Print expected input details from ONNX model
+            print("\nONNX model expects these inputs:")
+            for input_info in session.get_inputs():
+                print(f"  {input_info.name}: shape={input_info.shape}, type={input_info.type}")
+            raise
 
     def infer(
         self,
@@ -365,56 +466,85 @@ class CustomTTSModel(TTSModel):
             
             # Ensure ONNX model is exported
             self.export_to_onnx()
-            self.load_onnx_session()
+            session = self.load_onnx_session()
+            
+            if session is None:
+                print("Failed to initialize ONNX session, skipping ONNX comparison")
+                onnx_compare = False
+            else:
+                onnx_compare = True
             
             for text_item in test_texts:
+                print(f"  Text: '{text_item[:30]}{'...' if len(text_item) > 30 else ''}'")
+                
                 # First run torch.compile method
                 if use_compiled:
-                    start_time = time.time()
-                    try:
-                        _ = self._compiled_infer_implementation(
-                            text=text_item, 
-                            style_vector=style_vector,
-                            sdp_ratio=sdp_ratio,
-                            noise=noise,
-                            noisew=noise_w,
-                            length=length,
-                            speaker_id=speaker_id,
-                            language=language,
-                            assist_text=assist_text,
-                            assist_text_weight=assist_text_weight,
-                            given_phone=given_phone,
-                            given_tone=given_tone
-                        )
-                        compiled_time = time.time() - start_time
-                        compiled_times.append(compiled_time)
-                        print(f"  Text: '{text_item[:30]}{'...' if len(text_item) > 30 else ''}'")
-                        print(f"  Torch Compile method: {compiled_time:.4f} seconds")
-                    except Exception as e:
-                        print(f"  Torch Compile method failed: {e}")
+                    compiled_results = []
+                    for i in range(num_iterations):
+                        start_time = time.time()
+                        try:
+                            _ = self._compiled_infer_implementation(
+                                text=text_item, 
+                                style_vector=style_vector,
+                                sdp_ratio=sdp_ratio,
+                                noise=noise,
+                                noisew=noise_w,
+                                length=length,
+                                speaker_id=speaker_id,
+                                language=language,
+                                assist_text=assist_text,
+                                assist_text_weight=assist_text_weight,
+                                given_phone=given_phone,
+                                given_tone=given_tone
+                            )
+                            compiled_time = time.time() - start_time
+                            compiled_results.append(compiled_time)
+                            if i == 0:  # Only print for first iteration
+                                print(f"  Torch Compile method: {compiled_time:.4f} seconds")
+                        except Exception as e:
+                            print(f"  Torch Compile method failed: {e}")
+                            break
+                    
+                    if compiled_results:
+                        avg_time = sum(compiled_results) / len(compiled_results)
+                        compiled_times.append(avg_time)
+                        if len(compiled_results) > 1:
+                            print(f"  Torch Compile average ({len(compiled_results)} runs): {avg_time:.4f} seconds")
                 
-                # Then run ONNX method
-                try:
-                    start_time = time.time()
-                    _ = self._onnx_infer_implementation(
-                        text=text_item, 
-                        style_vector=style_vector,
-                        sdp_ratio=sdp_ratio,
-                        noise=noise,
-                        noisew=noise_w,
-                        length=length,
-                        speaker_id=speaker_id,
-                        language=language,
-                        assist_text=assist_text,
-                        assist_text_weight=assist_text_weight,
-                        given_phone=given_phone,
-                        given_tone=given_tone
-                    )
-                    onnx_time = time.time() - start_time
-                    onnx_times.append(onnx_time)
-                    print(f"  ONNX method: {onnx_time:.4f} seconds")
-                except Exception as e:
-                    print(f"  ONNX method failed: {e}")
+                # Then run ONNX method if available
+                if onnx_compare:
+                    onnx_results = []
+                    for i in range(num_iterations):
+                        try:
+                            start_time = time.time()
+                            _ = self._onnx_infer_implementation(
+                                text=text_item, 
+                                style_vector=style_vector,
+                                sdp_ratio=sdp_ratio,
+                                noise=noise,
+                                noisew=noise_w,
+                                length=length,
+                                speaker_id=speaker_id,
+                                language=language,
+                                assist_text=assist_text,
+                                assist_text_weight=assist_text_weight,
+                                given_phone=given_phone,
+                                given_tone=given_tone
+                            )
+                            onnx_time = time.time() - start_time
+                            onnx_results.append(onnx_time)
+                            if i == 0:  # Only print for first iteration
+                                print(f"  ONNX method: {onnx_time:.4f} seconds")
+                        except Exception as e:
+                            if i == 0:  # Only print error for first iteration
+                                print(f"  ONNX method failed: {e}")
+                            break
+                    
+                    if onnx_results:
+                        avg_time = sum(onnx_results) / len(onnx_results)
+                        onnx_times.append(avg_time)
+                        if len(onnx_results) > 1:
+                            print(f"  ONNX average ({len(onnx_results)} runs): {avg_time:.4f} seconds")
                     
                 print("  " + "-" * 40)
                 
@@ -452,7 +582,25 @@ class CustomTTSModel(TTSModel):
             return True, audio
         except Exception as e:
             print(f"ONNX inference failed: {e}. Falling back to torch compile method.")
-            return False, np.array([])
+            try:
+                audio = self._compiled_infer_implementation(
+                    text=text if not isinstance(text, list) else text[0], 
+                    style_vector=style_vector,
+                    sdp_ratio=sdp_ratio,
+                    noise=noise,
+                    noisew=noise_w,
+                    length=length,
+                    speaker_id=speaker_id,
+                    language=language,
+                    assist_text=assist_text,
+                    assist_text_weight=assist_text_weight,
+                    given_phone=given_phone,
+                    given_tone=given_tone
+                )
+                return True, audio
+            except Exception as e2:
+                print(f"Torch compile fallback also failed: {e2}")
+                return False, np.array([])
 
 def main(text, compare_methods=True, num_iterations=3, export_only=False):
     device = "cpu"

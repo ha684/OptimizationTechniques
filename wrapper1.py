@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 """
-Full script to load the TTS model, export it to ONNX, define two inference engines
-– one using torch.compile (using the onnxrt backend) and one using ONNX Runtime –
-and then compare their inference performance.
+Full script to load the TTS model, export it to ONNX, define two inference “engines”:
+one using torch.compile (with the onnxrt backend) and one using ONNX Runtime, and
+then compare their inference performance.
 """
 
 import time
@@ -16,7 +16,7 @@ from numpy.typing import NDArray
 
 import onnxruntime as ort
 
-# Import TTS classes and functions (make sure your PYTHONPATH includes style_bert_vits2)
+# Import TTS classes and functions (ensure your PYTHONPATH includes style_bert_vits2)
 from style_bert_vits2.tts_model import TTSModel
 from style_bert_vits2.models.hyper_parameters import HyperParameters
 from style_bert_vits2.models.models import SynthesizerTrn
@@ -37,7 +37,7 @@ from style_bert_vits2.constants import (
 from style_bert_vits2.nlp import bert_models
 from huggingface_hub import hf_hub_download
 
-# Download asset files if needed
+# Download asset files if needed.
 model_file = "jvnv-F1-jp/jvnv-F1-jp_e160_s14000.safetensors"
 config_file = "jvnv-F1-jp/config.json"
 style_file = "jvnv-F1-jp/style_vectors.npy"
@@ -54,8 +54,7 @@ print("Model files downloaded. Initializing model...")
 #######################################
 class InnerInferModel(torch.nn.Module):
     """
-    This class wraps the net_g.infer method that does the heavy‐lifting of TTS.
-    It also provides text pre‐processing.
+    Wraps the net_g.infer method and provides text pre-processing.
     """
     def __init__(self, net_g, device, hps):
         super().__init__()
@@ -110,7 +109,6 @@ class InnerInferModel(torch.nn.Module):
         length_scale: float,
         sid: int,
     ):
-        # Prepare inputs by adding a batch dimension.
         with torch.no_grad():
             x_tst = phones.to(self.device).unsqueeze(0)
             tones = tones.to(self.device).unsqueeze(0)
@@ -122,7 +120,6 @@ class InnerInferModel(torch.nn.Module):
             style_vec_tensor = torch.from_numpy(style_vec).to(self.device).unsqueeze(0)
             sid_tensor = torch.LongTensor([sid]).to(self.device)
             net_g = self.net_g
-            # Call the infer method of the model (cast to SynthesizerTrnJPExtra if needed)
             output = cast(SynthesizerTrnJPExtra, net_g).infer(
                 x_tst,
                 x_tst_lengths,
@@ -136,7 +133,6 @@ class InnerInferModel(torch.nn.Module):
                 noise_scale_w=noise_scale_w,
                 length_scale=length_scale,
             )
-            # Return a torch tensor (do not convert to numpy here so ONNX export works)
             audio = output[0][0, 0]
             return audio
 
@@ -145,13 +141,10 @@ class InnerInferModel(torch.nn.Module):
 #######################################
 class OnnxWrapperModel(torch.nn.Module):
     """
-    A wrapper that takes the necessary inputs and calls the net_g.infer method.
-    This model will be exported to ONNX.
+    A wrapper for ONNX export. It takes only the necessary inputs and calls the model's infer method.
     
     Note:
-      - It takes as inputs the “phones,” “tones,” “lang_ids,” and “ja_bert” tensors,
-        plus a style vector and scalars for the different ratios.
-      - For simplicity, we assume the inputs come as torch.Tensors.
+      - For simplicity, this wrapper accepts the dummy tensors as inputs.
     """
     def __init__(self, net_g, device, hps):
         super().__init__()
@@ -172,17 +165,14 @@ class OnnxWrapperModel(torch.nn.Module):
         length_scale: torch.Tensor, # scalar tensor (Float)
         sid: torch.Tensor,         # scalar tensor (Long)
     ):
-        # Add batch dimension and prepare other scalar inputs.
         x_tst = phones.unsqueeze(0)
         tones = tones.unsqueeze(0)
         lang_ids = lang_ids.unsqueeze(0)
         ja_bert = ja_bert.unsqueeze(0)
-        # Compute length from phones shape (use CPU version)
         x_tst_lengths = torch.LongTensor([phones.size(0)]).to(x_tst.device)
         style_vec_tensor = style_vec.unsqueeze(0)
         sid_tensor = sid.unsqueeze(0)
 
-        # Call the inference (using the infer method on net_g)
         output = cast(SynthesizerTrnJPExtra, self.net_g).infer(
             x_tst,
             x_tst_lengths,
@@ -196,14 +186,14 @@ class OnnxWrapperModel(torch.nn.Module):
             noise_scale_w=noise_scale_w.item() if isinstance(noise_scale_w, torch.Tensor) else float(noise_scale_w),
             length_scale=length_scale.item() if isinstance(length_scale, torch.Tensor) else float(length_scale),
         )
-        return output[0][0, 0]  # return the audio tensor
+        return output[0][0, 0]
 
 #######################################
 # 3. Define an ONNX runtime inference model class #
 #######################################
 class OnnxInferModel:
     """
-    This class loads the exported ONNX model and provides a forward-like function.
+    Loads the exported ONNX model and provides a forward-like function.
     """
     def __init__(self, onnx_model_path: Union[str, Path]):
         self.session = ort.InferenceSession(str(onnx_model_path))
@@ -221,7 +211,6 @@ class OnnxInferModel:
         length_scale: np.ndarray, # scalar in np.array
         sid: np.ndarray,         # scalar in np.array
     ) -> np.ndarray:
-        # Prepare the input dictionary for the session. The input names must match those provided in torch.onnx.export.
         inputs = {
             "phones": phones,
             "tones": tones,
@@ -238,7 +227,7 @@ class OnnxInferModel:
         return outputs[0]
 
 #######################################
-# 4. Update the CustomTTSModel to include ONNX export and ONNX inference
+# 4. Update the CustomTTSModel to include ONNX export and inference
 #######################################
 class CustomTTSModel(TTSModel):
     def __init__(self, model_path: Path, config_path: Union[Path, HyperParameters], style_vec_path: Union[Path, NDArray[Any]], device: str) -> None:
@@ -249,39 +238,35 @@ class CustomTTSModel(TTSModel):
         self.inner_infer = torch.compile(self._TTSModel__net_g, fullgraph=True, backend="onnxrt")
         self.use_compile = True
         self.compiled_inner_infer = InnerInferModel(self.inner_infer, self.device, self.hyper_parameters)
-        # Export the uncompiled net_g to ONNX and create an ONNX runtime inference instance.
+        # Export the uncompiled net_g to ONNX and instantiate an ONNX runtime inference object.
         self.onnx_model_path = assets_root / "model.onnx"
         self.export_to_onnx()
         self.onnx_infer = OnnxInferModel(self.onnx_model_path)
 
     def export_to_onnx(self):
         """
-        Exports the current net_g to an ONNX model.
-        Dummy inputs are created here; you might need to update their dimensions to match your model.
+        Exports the current net_g to an ONNX model using dummy inputs.
+        Adjust the dummy input shapes to match the expected model input dimensions.
         """
         print("Exporting model to ONNX...")
-        # Set the model in evaluation mode.
         self._TTSModel__net_g.eval()
-        # Create a wrapper for ONNX export.
         wrapper = OnnxWrapperModel(self._TTSModel__net_g, self.device, self.hyper_parameters).to(self.device)
-        # Dummy inputs (update the dims if necessary)
-        seq_len = 1024   # dummy sequence length
-        emb_dim = 768  # dummy embedding dimension for ja_bert; adjust per model
-        style_dim = 256  # dummy style vector dimension; adjust per model
-        
+        # Dummy inputs: adjust dimensions as required by your model.
+        seq_len = 50   # Dummy sequence length.
+        emb_dim = 1024  # Updated embedding dimension for ja_bert (changed from 768).
+        style_dim = 256  # Dummy style vector dimension (adjust if needed).
+
         dummy_phones = torch.randint(low=0, high=100, size=(seq_len,), dtype=torch.long, device=self.device)
         dummy_tones = torch.randint(low=0, high=10, size=(seq_len,), dtype=torch.long, device=self.device)
         dummy_lang_ids = torch.randint(low=0, high=2, size=(seq_len,), dtype=torch.long, device=self.device)
         dummy_ja_bert = torch.randn(seq_len, emb_dim, device=self.device)
         dummy_style_vec = torch.randn(style_dim, device=self.device)
-        # Scalars as 0-dim tensors
         dummy_sdp_ratio = torch.tensor(0.0, dtype=torch.float32, device=self.device)
         dummy_noise_scale = torch.tensor(0.0, dtype=torch.float32, device=self.device)
         dummy_noise_scale_w = torch.tensor(0.0, dtype=torch.float32, device=self.device)
         dummy_length_scale = torch.tensor(1.0, dtype=torch.float32, device=self.device)
         dummy_sid = torch.tensor(0, dtype=torch.long, device=self.device)
 
-        # Export to ONNX; set dynamic axes for variable sequence lengths.
         torch.onnx.export(
             wrapper,
             (dummy_phones, dummy_tones, dummy_lang_ids, dummy_ja_bert, dummy_style_vec,
@@ -295,7 +280,7 @@ class CustomTTSModel(TTSModel):
                 'lang_ids': {0: 'seq_len'},
                 'ja_bert': {0: 'seq_len'},
             },
-            opset_version=16,  # use a recent opset version if possible
+            opset_version=16,  # Use an opset version as needed.
         )
         print(f"ONNX model exported to {self.onnx_model_path}")
 
@@ -314,7 +299,6 @@ class CustomTTSModel(TTSModel):
         given_phone: Optional[list[str]] = None,
         given_tone: Optional[list[int]] = None,
     ) -> NDArray[Any]:
-        """The compiled infer implementation using torch.compile"""
         bert, ja_bert, en_bert, phones, tones, lang_ids = self.compiled_inner_infer.preprocess_text(
             text, language, assist_text, assist_text_weight, given_phone, given_tone
         )
@@ -340,24 +324,21 @@ class CustomTTSModel(TTSModel):
         given_phone: Optional[list[str]] = None,
         given_tone: Optional[list[int]] = None,
     ) -> NDArray[Any]:
-        """Inference implementation using the exported ONNX model and onnxruntime"""
-        # Preprocess text (same as compiled method)
+        # Preprocess text similar to the compiled method.
         bert, ja_bert, en_bert, phones, tones, lang_ids = self.compiled_inner_infer.preprocess_text(
             text, language, assist_text, assist_text_weight, given_phone, given_tone
         )
-        # Convert inputs to numpy arrays.
         phones_np = phones.cpu().numpy()
         tones_np = tones.cpu().numpy()
         lang_ids_np = lang_ids.cpu().numpy()
         ja_bert_np = ja_bert.cpu().numpy()
         style_vec_np = style_vector.astype(np.float32)
-        # Scalars as numpy arrays
+        # Scalars as numpy arrays.
         sdp_ratio_np = np.array(sdp_ratio, dtype=np.float32)
         noise_scale_np = np.array(noise, dtype=np.float32)
         noise_scale_w_np = np.array(noisew, dtype=np.float32)
         length_scale_np = np.array(length, dtype=np.float32)
         sid_np = np.array(speaker_id, dtype=np.int64)
-        # Run the ONNX inference and return audio
         audio = self.onnx_infer.onnx_forward(phones_np, tones_np, lang_ids_np, ja_bert_np,
                                              style_vec_np, sdp_ratio_np, noise_scale_np,
                                              noise_scale_w_np, length_scale_np, sid_np)
@@ -387,7 +368,7 @@ class CustomTTSModel(TTSModel):
         compare_methods: bool = True,
         num_iterations: int = 3,
     ) -> bool:
-        # Prepare style vector (from style id or reference audio)
+        # Prepare style vector (from style id or reference audio).
         if language != "JP" and self.hyper_parameters.version.endswith("JP-Extra"):
             raise ValueError("The model is trained with JP-Extra, but the language is not JP")
         if reference_audio_path == "":
@@ -405,14 +386,12 @@ class CustomTTSModel(TTSModel):
                 reference_audio_path, style_weight
             )
 
-        # Begin performance comparison.
         print("\n--- Starting performance comparison ---")
         print(f"Running {num_iterations} iterations for each method...")
         test_texts = text if isinstance(text, list) else [text]
         compiled_times = []
         onnx_times = []
         for text_item in test_texts:
-            # Compiled method inference timing.
             start_time = time.time()
             try:
                 _ = self._compiled_infer_implementation(
@@ -434,7 +413,7 @@ class CustomTTSModel(TTSModel):
                 print(f"Compiled method: {compiled_time:.4f} seconds")
             except Exception as e:
                 print(f"Compiled method failed: {e}")
-            # ONNX method inference timing.
+
             start_time = time.time()
             try:
                 _ = self._onnx_infer_implementation(
@@ -468,10 +447,10 @@ class CustomTTSModel(TTSModel):
         return True
 
 #######################################
-# 5. Main function and argument parsing
+# 5. Main function and argument parsing #
 #######################################
 def main(text, compare_methods=True, num_iterations=3):
-    device = "cpu"  # change to "cuda" if available and configured
+    device = "cpu"  # or "cuda" if available and configured
     model = CustomTTSModel(
         model_path=assets_root / model_file,
         config_path=assets_root / config_file,
