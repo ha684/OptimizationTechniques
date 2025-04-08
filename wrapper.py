@@ -383,16 +383,27 @@ def export_to_onnx_with_padding(model, output_path, device="cpu", fixed_seq_len=
             return output[0]  # shape [b, 1, audio_len]
     
     # Create sample input data
+    # Create sample input with the right dimensions
     inner_model = InnerInferModel(net_g, device, model.hyper_parameters)
     sample_text = "こんにちは、これはテストです。"
     bert, ja_bert, en_bert, phones, tones, lang_ids = inner_model.preprocess_text(
         sample_text, Languages.JP
     )
     
+    # Print original dimensions for debugging
+    print(f"Raw dimensions - bert: {bert.shape}, ja_bert: {ja_bert.shape}, phones: {phones.shape}")
+    
     # Pad tensors to fixed sequence length
-    print(f"Original sequence length: {phones.size(0)}")
-    bert = model.pad_to_fixed_length(bert, fixed_seq_len, pad_dim=1)
-    ja_bert = model.pad_to_fixed_length(ja_bert, fixed_seq_len, pad_dim=1)
+    print(f"Original sequence lengths - phones: {phones.size(0)}, bert: {bert.size(1)}")
+    
+    # For BERT embeddings, we need to ensure the middle dimension is exactly 1024
+    if bert.size(1) != 1024:
+        print(f"Resizing BERT embeddings from {bert.size(1)} to 1024 channels")
+        # If bert dimension is too large, truncate it. If too small, pad it.
+        bert = model.pad_to_fixed_length(bert, 1024, pad_dim=1)
+        ja_bert = model.pad_to_fixed_length(ja_bert, 1024, pad_dim=1)
+    
+    # For sequence dimensions, pad to fixed length
     phones = model.pad_to_fixed_length(phones, fixed_seq_len)
     tones = model.pad_to_fixed_length(tones, fixed_seq_len)
     lang_ids = model.pad_to_fixed_length(lang_ids, fixed_seq_len)
@@ -467,13 +478,18 @@ def infer_with_padded_onnx(model, onnx_path, text, language=Languages.JP, speake
     inner_model = InnerInferModel(model._TTSModel__net_g, model.device, model.hyper_parameters)
     bert, ja_bert, en_bert, phones, tones, lang_ids = inner_model.preprocess_text(text, language)
     
-    # Original sequence length for debugging
-    orig_len = phones.size(0)
-    print(f"Original sequence length: {orig_len}")
+    # Original dimensions for debugging
+    orig_seq_len = phones.size(0)
+    orig_bert_dim = bert.size(1)
+    print(f"Original dimensions - sequence: {orig_seq_len}, bert channels: {orig_bert_dim}")
     
-    # Pad to fixed sequence length
-    bert = model.pad_to_fixed_length(bert, pad_dim=1)
-    ja_bert = model.pad_to_fixed_length(ja_bert, pad_dim=1)
+    # First handle BERT dimensions - must be exactly 1024
+    if bert.size(1) != 1024:
+        print(f"Resizing BERT embeddings from {bert.size(1)} to 1024 channels")
+        bert = model.pad_to_fixed_length(bert, 1024, pad_dim=1)
+        ja_bert = model.pad_to_fixed_length(ja_bert, 1024, pad_dim=1)
+    
+    # Then handle sequence dimensions
     phones = model.pad_to_fixed_length(phones)
     tones = model.pad_to_fixed_length(tones)
     lang_ids = model.pad_to_fixed_length(lang_ids)
@@ -561,7 +577,7 @@ def main(text, compare_methods=True, num_iterations=3, export_only=False):
     if export_only:
         print("Exporting model to ONNX with fixed padding...")
         output_path = "style_bert_vits2_padded.onnx"
-        export_to_onnx_with_padding(model, output_path, device, fixed_seq_len=128)
+        export_to_onnx_with_padding(model, output_path, device, fixed_seq_len=  28)
         print("Export completed.")
         return
     
