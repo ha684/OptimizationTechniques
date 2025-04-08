@@ -512,6 +512,7 @@ def export_net_g_to_onnx(tts_model, output_path, device="cuda"):
 
 def main(text, compare_methods=True, num_iterations=3):
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cpu"
     print(f"Using device: {device}")
     
     model = CustomTTSModel(
