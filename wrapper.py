@@ -158,12 +158,6 @@ class CustomTTSModel(TTSModel):
         
         try:
             self.inner_infer = torch.compile(self._TTSModel__net_g,fullgraph=True,backend="onnxrt")
-            # print("Warming up compiled model...")
-            # for i in range(3):
-            #     start = time.time()
-            #     self._warmup_compiled_model()
-            #     print(f"Warmup time for iteration {i+1} is {time.time() - start:.2f} seconds")
-            # print("Warmup complete")
             self.use_compile = True
             self.compiled_inner_infer = InnerInferModel(self.inner_infer, self.device, self.hyper_parameters)
 
@@ -172,33 +166,6 @@ class CustomTTSModel(TTSModel):
             self.compiled_inner_infer = None
             self.use_compile = False
             self.use_compile = False
-            
-    def _warmup_compiled_model(self):
-        """Run a complete forward pass to ensure the model is fully compiled"""
-        sample_text = "You can deploy models to the managed inferencing solution, for both real-time and batch deployments, abstracting away the infrastructure management typically required for deploying models."
-        language = Languages.JP
-        style_id = 0
-        style_vector = self._TTSModel__get_style_vector(style_id, 1.0)
-        
-        sdp_ratio = DEFAULT_SDP_RATIO
-        noise = DEFAULT_NOISE
-        noise_w = DEFAULT_NOISEW
-        length = DEFAULT_LENGTH
-        speaker_id = 0
-        
-        with torch.no_grad():
-            bert, ja_bert, en_bert, phones, tones, lang_ids = self.inner_infer_model.preprocess_text(
-                sample_text, language, assist_text=None, assist_text_weight=DEFAULT_ASSIST_TEXT_WEIGHT
-            )
-            
-            _ = self.compiled_inner_infer(
-                bert, ja_bert, en_bert, phones, tones, lang_ids,
-                style_vector, sdp_ratio, noise, noise_w, 
-                length, speaker_id
-            )
-            
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
                 
     def _original_infer_implementation(
         self,
@@ -402,7 +369,138 @@ class CustomTTSModel(TTSModel):
             print("--------------------------------------")
 
         return True
+
+def export_net_g_to_onnx(tts_model, output_path, device="cuda"):
+    """
+    Export just the net_g component to ONNX format
     
+    Args:
+        tts_model: Your loaded CustomTTSModel instance
+        output_path: Path to save the ONNX model
+        device: Device to use for tensors
+    """
+    # Get the net_g component
+    net_g = tts_model._TTSModel__net_g
+    
+    # Set to eval mode
+    net_g.eval()
+    
+    # Determine if using JP-Extra version
+    is_jp_extra = tts_model.hyper_parameters.version.endswith("JP-Extra")
+    
+    # Create a wrapper class that has the same input interface as your compiled_inner_infer
+    class NetGWrapper(torch.nn.Module):
+        def __init__(self, net_g, is_jp_extra, device):
+            super().__init__()
+            self.net_g = net_g
+            self.is_jp_extra = is_jp_extra
+            self.device = device
+            
+        def forward(self, bert, ja_bert, en_bert, phones, tones, lang_ids,
+                  style_vec, sdp_ratio, noise_scale, noise_scale_w, length_scale, sid):
+            # Prepare inputs similar to your InnerInferModel.forward
+            x_tst = phones.unsqueeze(0)
+            x_tst_lengths = torch.LongTensor([phones.size(0)]).to(self.device)
+            sid_tensor = torch.LongTensor([sid]).to(self.device)
+            style_vec_tensor = style_vec.unsqueeze(0)
+            
+            # Call infer based on model type
+            if self.is_jp_extra:
+                output = self.net_g.infer(
+                    x_tst,
+                    x_tst_lengths,
+                    sid_tensor,
+                    tones.unsqueeze(0),
+                    lang_ids.unsqueeze(0),
+                    ja_bert.unsqueeze(0),
+                    style_vec=style_vec_tensor,
+                    sdp_ratio=sdp_ratio,
+                    noise_scale=noise_scale,
+                    noise_scale_w=noise_scale_w,
+                    length_scale=length_scale,
+                )
+            else:
+                output = self.net_g.infer(
+                    x_tst,
+                    x_tst_lengths,
+                    sid_tensor,
+                    tones.unsqueeze(0),
+                    lang_ids.unsqueeze(0),
+                    bert.unsqueeze(0),
+                    ja_bert.unsqueeze(0),
+                    en_bert.unsqueeze(0),
+                    style_vec=style_vec_tensor,
+                    sdp_ratio=sdp_ratio,
+                    noise_scale=noise_scale,
+                    noise_scale_w=noise_scale_w,
+                    length_scale=length_scale,
+                )
+            
+            # Return just the audio waveform
+            return output[0][0, 0]  # Extract the audio from output tuple
+    
+    # Create the wrapper instance
+    wrapper = NetGWrapper(net_g, is_jp_extra, device)
+    
+    # Get sample inputs from a short text (similar to how you'd call preprocess_text)
+    # This is to get actual shape and content for ONNX tracing
+    inner_model = InnerInferModel(net_g, device, tts_model.hyper_parameters)
+    sample_text = "テスト"  # Short test text
+    bert, ja_bert, en_bert, phones, tones, lang_ids = inner_model.preprocess_text(
+        sample_text, Languages.JP
+    )
+    
+    # Create example inputs for tracing
+    style_vector = np.zeros((768,), dtype=np.float32)  # Adjust size as needed
+    sdp_ratio = DEFAULT_SDP_RATIO
+    noise_scale = DEFAULT_NOISE
+    noise_scale_w = DEFAULT_NOISEW
+    length_scale = DEFAULT_LENGTH
+    sid = 0
+    
+    # Convert numpy/scalar values to tensors
+    style_vec_tensor = torch.from_numpy(style_vector).float().to(device)
+    sdp_ratio_tensor = torch.tensor(sdp_ratio, dtype=torch.float32).to(device)
+    noise_scale_tensor = torch.tensor(noise_scale, dtype=torch.float32).to(device)
+    noise_scale_w_tensor = torch.tensor(noise_scale_w, dtype=torch.float32).to(device)
+    length_scale_tensor = torch.tensor(length_scale, dtype=torch.float32).to(device)
+    sid_tensor = torch.tensor(sid, dtype=torch.int64).to(device)
+    
+    # Define input names
+    input_names = [
+        "bert", "ja_bert", "en_bert", "phones", "tones", "lang_ids",
+        "style_vec", "sdp_ratio", "noise_scale", "noise_scale_w", "length_scale", "sid"
+    ]
+    
+    # Define output names
+    output_names = ["audio"]
+    
+    # Export to ONNX
+    torch.onnx.export(
+        wrapper,
+        (bert, ja_bert, en_bert, phones, tones, lang_ids,
+         style_vec_tensor, sdp_ratio_tensor, noise_scale_tensor, noise_scale_w_tensor, 
+         length_scale_tensor, sid_tensor),
+        output_path,
+        export_params=True,
+        opset_version=16,
+        do_constant_folding=True,
+        input_names=input_names,
+        output_names=output_names,
+        dynamic_axes={
+            "bert": {0: "seq_len"},
+            "ja_bert": {0: "seq_len"},
+            "en_bert": {0: "seq_len"},
+            "phones": {0: "seq_len"},
+            "tones": {0: "seq_len"},
+            "lang_ids": {0: "seq_len"},
+            "audio": {0: "audio_len"}
+        }
+    )
+    
+    print(f"Model successfully exported to {output_path}")
+    return output_path
+
 def main(text, compare_methods=True, num_iterations=3):
     model = CustomTTSModel(
         model_path=assets_root / model_file,
@@ -410,27 +508,51 @@ def main(text, compare_methods=True, num_iterations=3):
         style_vec_path=assets_root / style_file,
         device="cuda" if torch.cuda.is_available() else "cpu",
     )
-    
-    print(f"Model initialized. Running inference with {'performance comparison' if compare_methods else 'compiled method only'}...")
-    text = [
-        text,
-        "元気ですか？",
-        "hello how are you",
-        "Compare original vs compiled method performance",
-        "Number of iterations for performance comparison",
-        "Elasticsearch is a distributed search and analytics engine, scalable data store and vector database optimized for speed and relevance on production-scale workloads.",
-        "Elasticsearch is the foundation of Elastic’s open Stack platform. Search in near real-time over massive datasets, perform vector searches, integrate with generative AI applications, and much more."
-    ]
-    result = model.infer(
-        text=text, 
-        compare_methods=compare_methods,
-        num_iterations=num_iterations
-    )
-    
-    if result:
-        print("Success")
+
+    if not compare_methods:
+        output_path = export_net_g_to_onnx(model, "style_bert_vits2_model.onnx")
     else:
-        print("Failed")
+        print(f"Model initialized. Running inference with {'performance comparison' if compare_methods else 'compiled method only'}...")
+        text = [
+            text,
+            "元気ですか？",
+            "hello how are you",
+            "Compare original vs compiled method performance",
+            "Number of iterations for performance comparison",
+            "Elasticsearch is a distributed search and analytics engine, scalable data store and vector database optimized for speed and relevance on production-scale workloads.",
+            "Elasticsearch is the foundation of Elastic’s open Stack platform. Search in near real-time over massive datasets, perform vector searches, integrate with generative AI applications, and much more."
+        ]
+        result = model.infer(
+            text=text, 
+            compare_methods=compare_methods,
+            num_iterations=num_iterations
+        )
+        
+        if result:
+            print("Success")
+        else:
+            print("Failed")
+        
+        print(f"Model initialized. Running inference with {'performance comparison' if compare_methods else 'compiled method only'}...")
+        text = [
+            text,
+            "元気ですか？",
+            "hello how are you",
+            "Compare original vs compiled method performance",
+            "Number of iterations for performance comparison",
+            "Elasticsearch is a distributed search and analytics engine, scalable data store and vector database optimized for speed and relevance on production-scale workloads.",
+            "Elasticsearch is the foundation of Elastic’s open Stack platform. Search in near real-time over massive datasets, perform vector searches, integrate with generative AI applications, and much more."
+        ]
+        result = model.infer(
+            text=text, 
+            compare_methods=compare_methods,
+            num_iterations=num_iterations
+        )
+        
+        if result:
+            print("Success")
+        else:
+            print("Failed")
     
 if __name__ == "__main__":
     import argparse
