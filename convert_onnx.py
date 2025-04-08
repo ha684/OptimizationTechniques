@@ -113,13 +113,13 @@ class CustomSynthesizerTrn(SynthesizerTrn):
         language = torch.zeros_like(x).cpu()
         x_lengths = torch.LongTensor([x.shape[1]]).cpu()
         sid = torch.LongTensor([0]).cpu()
-        bert = torch.randn(size=(x.shape[1], 1024)).cpu()
-        ja_bert = torch.randn(size=(x.shape[1], 1024)).cpu()
-        en_bert = torch.randn(size=(x.shape[1], 1024)).cpu()
+        bert = torch.randn(size=(1, 1024, x.shape[1])).cpu()
+        ja_bert = torch.randn(size=(1, 1024, x.shape[1])).cpu()
+        en_bert = torch.randn(size=(1, 1024, x.shape[1])).cpu()
         basename = os.path.basename(path)
 
         if self.n_speakers > 0:
-            g = self.emb_g(sid).unsqueeze(-1)  # [b, h, 1]
+            g = self.emb_g(sid).unsqueeze(-1)
             torch.onnx.export(
                 self.emb_g,
                 (sid),
