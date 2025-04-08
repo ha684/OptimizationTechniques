@@ -157,53 +157,12 @@ class CustomTTSModel(TTSModel):
         self.load()
         assert self._TTSModel__net_g is not None, "Model not loaded correctly, net_g is None"
         
-        try:
-            self.inner_infer = torch.compile(self._TTSModel__net_g,fullgraph=True,backend="onnxrt")
-            self.use_compile = True
-            self.compiled_inner_infer = InnerInferModel(self.inner_infer, self.device, self.hyper_parameters)
-            self.ort_session = ort.InferenceSession("/content/ncc-test/ncc-test/ncc-test/ncc-test/ncc-test/ncc-test/ncc-test/style_bert_vits2_model.onnx")
-
-
-        except Exception as e:
-            print(f"Failed to compile model: {e}")
-            self.compiled_inner_infer = None
-            self.use_compile = False
-            self.use_compile = False
-                
-    def _original_infer_implementation(
-        self,
-        text: str,
-        style_vector: NDArray[Any],
-        sdp_ratio: float,
-        noise: float,
-        noise_w: float,
-        length: float,
-        speaker_id: int,
-        language: Languages,
-        assist_text: Optional[str] = None,
-        assist_text_weight: float = DEFAULT_ASSIST_TEXT_WEIGHT,
-        given_phone: Optional[list[str]] = None,
-        given_tone: Optional[list[int]] = None,
-    ) -> NDArray[Any]:
-        """The original infer implementation using the imported infer function"""
-        audio = infer(
-            text=text,
-            sdp_ratio=sdp_ratio,
-            noise_scale=noise,
-            noise_scale_w=noise_w,
-            length_scale=length,
-            sid=speaker_id,
-            language=language,
-            hps=self.hyper_parameters,
-            net_g=self._TTSModel__net_g,
-            device=self.device,
-            assist_text=assist_text,
-            assist_text_weight=assist_text_weight,
-            style_vec=style_vector,
-            given_phone=given_phone,
-            given_tone=given_tone,
-        )
-        return audio
+        self.inner_infer = torch.compile(self._TTSModel__net_g,fullgraph=True,backend="onnxrt")
+        self.use_compile = True
+        self.compiled_inner_infer = InnerInferModel(self.inner_infer, self.device, self.hyper_parameters)
+        session_options = ort.SessionOptions()
+        session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        self.ort_session = ort.InferenceSession("style_bert_vits2_model.onnx", session_options)
     
     def _compiled_infer_implementation(
         self,
@@ -224,31 +183,12 @@ class CustomTTSModel(TTSModel):
         bert, ja_bert, en_bert, phones, tones, lang_ids = self.compiled_inner_infer.preprocess_text(
             text, language, assist_text, assist_text_weight, given_phone, given_tone
         )
-        
-        try:
-            audio = self.compiled_inner_infer(
-                bert, ja_bert, en_bert, phones, tones, lang_ids,
-                style_vector, sdp_ratio, noise, noise_w, 
-                length, speaker_id
-            )
-            return audio
-        except Exception as e:
-            print(f"Error in compiled inference: {e}")
-            print("Falling back to original implementation...")
-            return self._original_infer_implementation(
-                text=text, 
-                style_vector=style_vector,
-                sdp_ratio=sdp_ratio,
-                noise=noise,
-                noise_w=noise_w,
-                length=length,
-                speaker_id=speaker_id,
-                language=language,
-                assist_text=assist_text,
-                assist_text_weight=assist_text_weight,
-                given_phone=given_phone,
-                given_tone=given_tone
-            )
+        audio = self.compiled_inner_infer(
+            bert, ja_bert, en_bert, phones, tones, lang_ids,
+            style_vector, sdp_ratio, noise, noise_w, 
+            length, speaker_id
+        )
+        return audio
             
     def infer_with_onnx(        
         self,
@@ -269,25 +209,35 @@ class CustomTTSModel(TTSModel):
         bert, ja_bert, en_bert, phones, tones, lang_ids = self.compiled_inner_infer.preprocess_text(
             text, language, assist_text, assist_text_weight, given_phone, given_tone
         )
+        
+        bert = bert.unsqueeze(0).cpu().numpy()
+        ja_bert = ja_bert.unsqueeze(0).cpu().numpy()
+        en_bert = en_bert.unsqueeze(0).cpu().numpy()
+        phones = phones.unsqueeze(0).cpu().numpy()
+        tones = tones.unsqueeze(0).cpu().numpy()
+        lang_ids = lang_ids.unsqueeze(0).cpu().numpy()
+        
+        if style_vector.ndim == 1:
+            style_vector = style_vector.reshape(1, -1)
+            
         ort_inputs = {
-            "bert": bert.cpu().numpy(),
-            "ja_bert": ja_bert.cpu().numpy(),
-            "en_bert": en_bert.cpu().numpy(),
-            "phones": phones.cpu().numpy(),
-            "tones": tones.cpu().numpy(),
-            "lang_ids": lang_ids.cpu().numpy(),
+            "bert": bert,
+            "ja_bert": ja_bert,
+            "en_bert": en_bert,
+            "phones": phones,
+            "tones": tones,
+            "lang_ids": lang_ids,
             "style_vec": style_vector.astype(np.float32),
             "sdp_ratio": np.array(sdp_ratio, dtype=np.float32),
             "noise_scale": np.array(noise, dtype=np.float32),
             "noise_scale_w": np.array(noise_w, dtype=np.float32),
             "length_scale": np.array(length, dtype=np.float32),
-            "sid": np.array(speaker_id, dtype=np.int64)
+            "sid": np.array([speaker_id], dtype=np.int64)
         }
-        
-        # Run inference
+
         audio = self.ort_session.run(None, ort_inputs)[0]
-        return audio
-  
+        return audio[0]
+
     def infer(
         self,
         text: str,
@@ -438,23 +388,24 @@ def export_net_g_to_onnx(tts_model, output_path, device="cuda"):
             self.device = device
             
         def forward(self, bert, ja_bert, en_bert, phones, tones, lang_ids,
-                  style_vec, sdp_ratio, noise_scale, noise_scale_w, length_scale, sid):
-            # Prepare inputs similar to your InnerInferModel.forward
-            x_tst = phones.unsqueeze(0)
-            x_tst_lengths = torch.LongTensor([phones.size(0)]).to(self.device)
-            sid_tensor = torch.LongTensor([sid]).to(self.device)
-            style_vec_tensor = style_vec.unsqueeze(0)
+                   style_vec, sdp_ratio, noise_scale, noise_scale_w, length_scale, sid):
+            # Handle shapes explicitly to ensure consistency
+            # Note: We expect all inputs to be batched (have a leading batch dimension)
+            
+            # Get sequence length for x_tst_lengths
+            seq_len = phones.size(1)
+            x_tst_lengths = torch.LongTensor([seq_len]).to(self.device)
             
             # Call infer based on model type
             if self.is_jp_extra:
                 output = self.net_g.infer(
-                    x_tst,
+                    phones,               # Already has batch dimension
                     x_tst_lengths,
-                    sid_tensor,
-                    tones.unsqueeze(0),
-                    lang_ids.unsqueeze(0),
-                    ja_bert.unsqueeze(0),
-                    style_vec=style_vec_tensor,
+                    sid,                  # Should be tensor with shape [1]
+                    tones,                # Already has batch dimension
+                    lang_ids,             # Already has batch dimension
+                    ja_bert,              # Already has batch dimension
+                    style_vec=style_vec,  # Already has batch dimension
                     sdp_ratio=sdp_ratio,
                     noise_scale=noise_scale,
                     noise_scale_w=noise_scale_w,
@@ -462,15 +413,15 @@ def export_net_g_to_onnx(tts_model, output_path, device="cuda"):
                 )
             else:
                 output = self.net_g.infer(
-                    x_tst,
+                    phones,               # Already has batch dimension
                     x_tst_lengths,
-                    sid_tensor,
-                    tones.unsqueeze(0),
-                    lang_ids.unsqueeze(0),
-                    bert.unsqueeze(0),
-                    ja_bert.unsqueeze(0),
-                    en_bert.unsqueeze(0),
-                    style_vec=style_vec_tensor,
+                    sid,                  # Should be tensor with shape [1]
+                    tones,                # Already has batch dimension
+                    lang_ids,             # Already has batch dimension
+                    bert,                 # Already has batch dimension
+                    ja_bert,              # Already has batch dimension
+                    en_bert,              # Already has batch dimension
+                    style_vec=style_vec,  # Already has batch dimension
                     sdp_ratio=sdp_ratio,
                     noise_scale=noise_scale,
                     noise_scale_w=noise_scale_w,
@@ -478,26 +429,29 @@ def export_net_g_to_onnx(tts_model, output_path, device="cuda"):
                 )
             
             # Return just the audio waveform
-            return output[0][0, 0]  # Extract the audio from output tuple
+            return output[0][:, 0, :]  # Return with batch dimension preserved
     
     # Create the wrapper instance
     wrapper = NetGWrapper(net_g, is_jp_extra, device)
-    
-    # Get sample inputs from a short text (similar to how you'd call preprocess_text)
-    # This is to get actual shape and content for ONNX tracing
+
     inner_model = InnerInferModel(net_g, device, tts_model.hyper_parameters)
     sample_text = "テスト"  # Short test text
     bert, ja_bert, en_bert, phones, tones, lang_ids = inner_model.preprocess_text(
         sample_text, Languages.JP
     )
+    bert = bert.unsqueeze(0)
+    ja_bert = ja_bert.unsqueeze(0) 
+    en_bert = en_bert.unsqueeze(0)
+    phones = phones.unsqueeze(0)
+    tones = tones.unsqueeze(0)
+    lang_ids = lang_ids.unsqueeze(0)
     
-    # Create example inputs for tracing
-    style_vector = np.zeros((256,), dtype=np.float32)  # Adjust size as needed
+    style_vector = np.zeros((1, 256), dtype=np.float32)  # Add batch dimension
     sdp_ratio = DEFAULT_SDP_RATIO
     noise_scale = DEFAULT_NOISE
     noise_scale_w = DEFAULT_NOISEW
     length_scale = DEFAULT_LENGTH
-    sid = 0
+    sid = torch.LongTensor([0]).to(device)  # Speaker ID as a tensor
     
     # Convert numpy/scalar values to tensors
     style_vec_tensor = torch.from_numpy(style_vector).float().to(device)
@@ -505,7 +459,7 @@ def export_net_g_to_onnx(tts_model, output_path, device="cuda"):
     noise_scale_tensor = torch.tensor(noise_scale, dtype=torch.float32).to(device)
     noise_scale_w_tensor = torch.tensor(noise_scale_w, dtype=torch.float32).to(device)
     length_scale_tensor = torch.tensor(length_scale, dtype=torch.float32).to(device)
-    sid_tensor = torch.tensor(sid, dtype=torch.int64).to(device)
+    # sid_tensor = torch.tensor(sid, dtype=torch.int64).to(device)
     
     # Define input names
     input_names = [
@@ -516,29 +470,32 @@ def export_net_g_to_onnx(tts_model, output_path, device="cuda"):
     # Define output names
     output_names = ["audio"]
     
+    dynamic_axes = {
+        "bert": {0: "batch_size", 1: "seq_len"},
+        "ja_bert": {0: "batch_size", 1: "seq_len"},
+        "en_bert": {0: "batch_size", 1: "seq_len"},
+        "phones": {0: "batch_size", 1: "seq_len"},
+        "tones": {0: "batch_size", 1: "seq_len"},
+        "lang_ids": {0: "batch_size", 1: "seq_len"},
+        "audio": {0: "batch_size", 1: "audio_len"}
+    }
     # Export to ONNX
     torch.onnx.export(
         wrapper,
         (bert, ja_bert, en_bert, phones, tones, lang_ids,
-         style_vec_tensor, sdp_ratio_tensor, noise_scale_tensor, noise_scale_w_tensor, 
-         length_scale_tensor, sid_tensor),
+        style_vec_tensor, sdp_ratio_tensor, noise_scale_tensor, noise_scale_w_tensor, 
+        length_scale_tensor, sid),
         output_path,
         export_params=True,
-        opset_version=16,
+        opset_version=17,
         do_constant_folding=True,
         input_names=input_names,
         output_names=output_names,
-        dynamic_axes={
-            "bert": {0: "seq_len"},
-            "ja_bert": {0: "seq_len"},
-            "en_bert": {0: "seq_len"},
-            "phones": {0: "seq_len"},
-            "tones": {0: "seq_len"},
-            "lang_ids": {0: "seq_len"},
-            "audio": {0: "audio_len"}
-        }
+        dynamic_axes=dynamic_axes
     )
-    
+    import onnx
+    model = onnx.load(output_path)
+    onnx.checker.check_model(model)
     print(f"Model successfully exported to {output_path}")
     return output_path
 
