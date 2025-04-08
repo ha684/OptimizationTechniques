@@ -30,6 +30,7 @@ from huggingface_hub import hf_hub_download
 import time
 from style_bert_vits2.nlp import bert_models
 import unicodedata
+import onnxruntime as ort
 
 bert_models.load_model(Languages.JP, "ku-nlp/deberta-v2-large-japanese-char-wwm")
 bert_models.load_tokenizer(Languages.JP, "ku-nlp/deberta-v2-large-japanese-char-wwm")
@@ -160,6 +161,8 @@ class CustomTTSModel(TTSModel):
             self.inner_infer = torch.compile(self._TTSModel__net_g,fullgraph=True,backend="onnxrt")
             self.use_compile = True
             self.compiled_inner_infer = InnerInferModel(self.inner_infer, self.device, self.hyper_parameters)
+            self.ort_session = ort.InferenceSession("/content/ncc-test/ncc-test/ncc-test/ncc-test/ncc-test/ncc-test/ncc-test/style_bert_vits2_model.onnx")
+
 
         except Exception as e:
             print(f"Failed to compile model: {e}")
@@ -246,7 +249,45 @@ class CustomTTSModel(TTSModel):
                 given_phone=given_phone,
                 given_tone=given_tone
             )
-    
+            
+    def infer_with_onnx(        
+        self,
+        text: str,
+        style_vector: NDArray[Any],
+        sdp_ratio: float,
+        noise: float,
+        noise_w: float,
+        length: float,
+        speaker_id: int,
+        language: Languages,
+        assist_text: Optional[str] = None,
+        assist_text_weight: float = DEFAULT_ASSIST_TEXT_WEIGHT,
+        given_phone: Optional[list[str]] = None,
+        given_tone: Optional[list[int]] = None,
+    ) -> NDArray[Any]:
+        """The compiled infer implementation using torch.compile"""
+        bert, ja_bert, en_bert, phones, tones, lang_ids = self.compiled_inner_infer.preprocess_text(
+            text, language, assist_text, assist_text_weight, given_phone, given_tone
+        )
+        ort_inputs = {
+            "bert": bert.cpu().numpy(),
+            "ja_bert": ja_bert.cpu().numpy(),
+            "en_bert": en_bert.cpu().numpy(),
+            "phones": phones.cpu().numpy(),
+            "tones": tones.cpu().numpy(),
+            "lang_ids": lang_ids.cpu().numpy(),
+            "style_vec": style_vector.astype(np.float32),
+            "sdp_ratio": np.array(sdp_ratio, dtype=np.float32),
+            "noise_scale": np.array(noise, dtype=np.float32),
+            "noise_scale_w": np.array(noise_w, dtype=np.float32),
+            "length_scale": np.array(length, dtype=np.float32),
+            "sid": np.array(speaker_id, dtype=np.int64)
+        }
+        
+        # Run inference
+        audio = self.ort_session.run(None, ort_inputs)[0]
+        return audio
+  
     def infer(
         self,
         text: str,
@@ -302,7 +343,7 @@ class CustomTTSModel(TTSModel):
 
                 start_time = time.time()
                 try:
-                    _ = self._original_infer_implementation(
+                    _ = self.infer_with_onnx(
                         text=text[i], 
                         style_vector=style_vector,
                         sdp_ratio=sdp_ratio,
