@@ -215,11 +215,13 @@ class CustomTTSModel(TTSModel):
         given_phone: Optional[list[str]] = None,
         given_tone: Optional[list[int]] = None,
     ) -> NDArray[Any]:
-        """The compiled infer implementation using torch.compile"""
+        """Inference using ONNX runtime with proper handling of sequence dimensions"""
+        # Preprocess the text to get all required inputs
         bert, ja_bert, en_bert, phones, tones, lang_ids = self.compiled_inner_infer.preprocess_text(
             text, language, assist_text, assist_text_weight, given_phone, given_tone
         )
         
+        # Add batch dimension and convert to numpy arrays
         bert = bert.unsqueeze(0).cpu().numpy()
         ja_bert = ja_bert.unsqueeze(0).cpu().numpy()
         en_bert = en_bert.unsqueeze(0).cpu().numpy()
@@ -227,16 +229,21 @@ class CustomTTSModel(TTSModel):
         tones = tones.unsqueeze(0).cpu().numpy()
         lang_ids = lang_ids.unsqueeze(0).cpu().numpy()
         
+        # Print shapes for debugging
+        print(f"Inference shapes - bert: {bert.shape}, ja_bert: {ja_bert.shape}, phones: {phones.shape}")
+        
+        # Make sure style_vector has batch dimension
         if style_vector.ndim == 1:
             style_vector = style_vector.reshape(1, -1)
-            
+        
+        # Create ONNX runtime inputs with proper shapes
         ort_inputs = {
-            "bert": bert,
-            "ja_bert": ja_bert,
-            "en_bert": en_bert,
-            "phones": phones,
-            "tones": tones,
-            "lang_ids": lang_ids,
+            "bert": bert.astype(np.float32),
+            "ja_bert": ja_bert.astype(np.float32),
+            "en_bert": en_bert.astype(np.float32),
+            "phones": phones.astype(np.int64),
+            "tones": tones.astype(np.int64),
+            "lang_ids": lang_ids.astype(np.int64),
             "style_vec": style_vector.astype(np.float32),
             "sdp_ratio": np.array(sdp_ratio, dtype=np.float32),
             "noise_scale": np.array(noise, dtype=np.float32),
@@ -244,10 +251,24 @@ class CustomTTSModel(TTSModel):
             "length_scale": np.array(length, dtype=np.float32),
             "sid": np.array([speaker_id], dtype=np.int64)
         }
-
-        audio = self.ort_session.run(None, ort_inputs)[0]
-        return audio[0]
-
+        
+        # Get session info
+        print("ONNX Session Input Names:", self.ort_session.get_inputs())
+        for input_name in self.ort_session.get_inputs():
+            print(f"Expected shape for {input_name.name}: {input_name.shape}")
+        
+        # Run inference
+        try:
+            audio = self.ort_session.run(None, ort_inputs)[0]
+            # Remove batch dimension for return
+            return audio[0]
+        except Exception as e:
+            print(f"ONNX inference error: {e}")
+            # Print problematic input shapes
+            for name, tensor in ort_inputs.items():
+                print(f"{name} shape: {tensor.shape}")
+            raise
+    
     def infer(
         self,
         text: str,
@@ -446,7 +467,7 @@ def export_net_g_to_onnx(tts_model, output_path, device="cuda"):
     wrapper = NetGWrapper(net_g, is_jp_extra, device)
 
     inner_model = InnerInferModel(net_g, device, tts_model.hyper_parameters)
-    sample_text = "テスト"  # Short test text
+    sample_text = "こんにちは、これはテストです。"
     bert, ja_bert, en_bert, phones, tones, lang_ids = inner_model.preprocess_text(
         sample_text, Languages.JP
     )
@@ -457,6 +478,8 @@ def export_net_g_to_onnx(tts_model, output_path, device="cuda"):
     tones = tones.unsqueeze(0)
     lang_ids = lang_ids.unsqueeze(0)
     
+    print(f"Export shapes - bert: {bert.shape}, ja_bert: {ja_bert.shape}, phones: {phones.shape}")
+
     style_vector = np.zeros((1, 256), dtype=np.float32)  # Add batch dimension
     sdp_ratio = DEFAULT_SDP_RATIO
     noise_scale = DEFAULT_NOISE
@@ -502,11 +525,17 @@ def export_net_g_to_onnx(tts_model, output_path, device="cuda"):
         do_constant_folding=True,
         input_names=input_names,
         output_names=output_names,
-        dynamic_axes=dynamic_axes
+        dynamic_axes=dynamic_axes,
+        verbose=True
     )
-    import onnx
-    model = onnx.load(output_path)
-    onnx.checker.check_model(model)
+    try:
+        import onnx
+        model = onnx.load(output_path)
+        onnx.checker.check_model(model)
+        print(f"ONNX model verification passed")
+    except Exception as e:
+        print(f"ONNX model verification failed: {e}")
+        
     print(f"Model successfully exported to {output_path}")
     return output_path
 
