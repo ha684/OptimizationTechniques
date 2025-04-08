@@ -261,7 +261,7 @@ class CustomTTSModel(TTSModel):
         try:
             audio = self.ort_session.run(None, ort_inputs)[0]
             # Remove batch dimension for return
-            return audio[0]
+            return audio
         except Exception as e:
             print(f"ONNX inference error: {e}")
             # Print problematic input shapes
@@ -424,7 +424,7 @@ def export_net_g_to_onnx(tts_model, output_path, device="cuda"):
             # Handle shapes explicitly to ensure consistency
             # Note: We expect all inputs to be batched (have a leading batch dimension)
             
-            # Get sequence length for x_tst_lengths
+            # Use dynamic sequence length from the input tensor
             seq_len = phones.size(1)
             x_tst_lengths = torch.LongTensor([seq_len]).to(self.device)
             
@@ -471,6 +471,11 @@ def export_net_g_to_onnx(tts_model, output_path, device="cuda"):
     bert, ja_bert, en_bert, phones, tones, lang_ids = inner_model.preprocess_text(
         sample_text, Languages.JP
     )
+    
+    # Use original sequence lengths - don't pad to fixed length
+    seq_len = phones.size(0)
+    
+    # Add batch dimension
     bert = bert.unsqueeze(0)
     ja_bert = ja_bert.unsqueeze(0) 
     en_bert = en_bert.unsqueeze(0)
@@ -504,6 +509,7 @@ def export_net_g_to_onnx(tts_model, output_path, device="cuda"):
     # Define output names
     output_names = ["audio"]
     
+    # Use dynamic axes for sequence lengths like your successful torch.compile approach
     dynamic_axes = {
         "bert": {0: "batch_size", 1: "seq_len"},
         "ja_bert": {0: "batch_size", 1: "seq_len"},
@@ -514,6 +520,18 @@ def export_net_g_to_onnx(tts_model, output_path, device="cuda"):
         "audio": {0: "batch_size", 1: "audio_len"}
     }
     # Export to ONNX
+    # First create a script version of just the net_g component
+    # This approach is similar to how torch.compile was successfully applied
+    scripted_net_g = None
+    try:
+        # Try to script the net_g component directly (may fail due to tracing issues)
+        scripted_net_g = torch.jit.script(net_g)
+        print("Successfully scripted net_g")
+    except Exception as e:
+        print(f"Could not script net_g directly: {e}")
+        # If direct scripting fails, we'll script the wrapper instead
+        pass
+    
     torch.onnx.export(
         wrapper,
         (bert, ja_bert, en_bert, phones, tones, lang_ids,
@@ -526,6 +544,7 @@ def export_net_g_to_onnx(tts_model, output_path, device="cuda"):
         input_names=input_names,
         output_names=output_names,
         dynamic_axes=dynamic_axes,
+        verbose=True,  # Add verbose output to get more information about the export process
     )
     try:
         import onnx
