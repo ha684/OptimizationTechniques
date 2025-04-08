@@ -526,7 +526,6 @@ def export_net_g_to_onnx(tts_model, output_path, device="cuda"):
         input_names=input_names,
         output_names=output_names,
         dynamic_axes=dynamic_axes,
-        verbose=True
     )
     try:
         import onnx
