@@ -503,6 +503,7 @@ def export_net_g_to_onnx(tts_model, output_path, device="cuda"):
 
 def main(text, compare_methods=True, num_iterations=3):
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cpu"
     print(f"Using device: {device}")
     
     model = CustomTTSModel(
@@ -513,7 +514,7 @@ def main(text, compare_methods=True, num_iterations=3):
     )
     print(model)
     if not compare_methods:
-        output_path = export_net_g_to_onnx(model, "style_bert_vits2_model.onnx",device="cpu")
+        output_path = export_net_g_to_onnx(model, "style_bert_vits2_model.onnx",device)
     else:
         print(f"Model initialized. Running inference with {'performance comparison' if compare_methods else 'compiled method only'}...")
         text = [
