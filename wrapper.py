@@ -35,17 +35,11 @@ model_file = "jvnv-F1-jp/jvnv-F1-jp_e160_s14000.safetensors"
 config_file = "jvnv-F1-jp/config.json"
 style_file = "jvnv-F1-jp/style_vectors.npy"
 
-# Download model files
-assets_root = Path("model_assets")
-assets_root.mkdir(exist_ok=True)
-
 for file in [model_file, config_file, style_file]:
-    if not (assets_root / Path(file).name).exists():
-        print(f"Downloading {file}...")
-        hf_hub_download("litagin/style_bert_vits2_jvnv", file, local_dir="model_assets")
-    else:
-        print(f"{file} already exists, skipping download")
+    print(f"Downloading {file}...")
+    hf_hub_download("litagin/style_bert_vits2_jvnv", file, local_dir="model_assets")
 
+assets_root = Path("model_assets")
 print("Model files downloaded. Initializing model...")
 
 class InnerInferModel(torch.nn.Module):
