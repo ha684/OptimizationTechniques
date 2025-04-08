@@ -513,7 +513,7 @@ def main(text, compare_methods=True, num_iterations=3):
     )
     print(model)
     if not compare_methods:
-        output_path = export_net_g_to_onnx(model, "style_bert_vits2_model.onnx",device)
+        output_path = export_net_g_to_onnx(model, "style_bert_vits2_model.onnx",device="cpu")
     else:
         print(f"Model initialized. Running inference with {'performance comparison' if compare_methods else 'compiled method only'}...")
         text = [
