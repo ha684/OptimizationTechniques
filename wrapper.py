@@ -138,12 +138,12 @@ class CustomTTSModel(TTSModel):
         self.compiled_inner_infer = InnerInferModel(self.inner_infer, self.device, self.hyper_parameters)
         self.onnx_session = OnnxInferenceSession(
             {
-                "enc": "Bert_VITS2/onnx/BertVits/BertVits_enc_p.onnx",
-                "emb_g": "Bert_VITS2/onnx/BertVits/BertVits_emb.onnx",
-                "dp": "Bert_VITS2/onnx/BertVits/BertVits_dp.onnx",
-                "sdp": "Bert_VITS2/onnx/BertVits/BertVits_sdp.onnx",
-                "flow": "Bert_VITS2/onnx/BertVits/BertVits_flow.onnx",
-                "dec": "Bert_VITS2/onnx/BertVits/BertVits_dec.onnx",
+                "enc": "/content/drive/MyDrive/Bert_VITS2/onnx/BertVits/BertVits_enc_p.onnx",
+                "emb_g": "/content/drive/MyDrive/Bert_VITS2/onnx/BertVits/BertVits_emb.onnx",
+                "dp": "/content/drive/MyDrive/Bert_VITS2/onnx/BertVits/BertVits_dp.onnx",
+                "sdp": "/content/drive/MyDrive/Bert_VITS2/onnx/BertVits/BertVits_sdp.onnx",
+                "flow": "/content/drive/MyDrive/Bert_VITS2/onnx/BertVits/BertVits_flow.onnx",
+                "dec": "/content/drive/MyDrive/Bert_VITS2/onnx/BertVits/BertVits_dec.onnx",
             },
             Providers=["CPUExecutionProvider"],
         )
