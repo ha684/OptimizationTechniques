@@ -1,2 +1,7 @@
 model
 Bert-VITS2/
+*.pyc
+*.yml
+/Bert_VITS2
+/model_assets
+/onnx

@@ -68,6 +68,7 @@ class CustomSynthesizerTrn(SynthesizerTrn):
         max_len=None,
         sdp_ratio=0,
         y=None,
+        style_vector=None,  # Add style vector parameter
     ):
         noise_scale = 0.667
         length_scale = 1
@@ -75,35 +76,7 @@ class CustomSynthesizerTrn(SynthesizerTrn):
         x = (
             torch.LongTensor(
                 [
-                    0,
-                    97,
-                    0,
-                    8,
-                    0,
-                    78,
-                    0,
-                    8,
-                    0,
-                    76,
-                    0,
-                    37,
-                    0,
-                    40,
-                    0,
-                    97,
-                    0,
-                    8,
-                    0,
-                    23,
-                    0,
-                    8,
-                    0,
-                    74,
-                    0,
-                    26,
-                    0,
-                    104,
-                    0,
+                    0, 97, 0, 8, 0, 78, 0, 8, 0, 76, 0, 37, 0, 40, 0, 97, 0, 8, 0, 23, 0, 8, 0, 74, 0, 26, 0, 104, 0,
                 ]
             )
             .unsqueeze(0)
@@ -117,6 +90,13 @@ class CustomSynthesizerTrn(SynthesizerTrn):
         ja_bert = torch.randn(size=(1, 1024, x.shape[1])).cpu()
         en_bert = torch.randn(size=(1, 1024, x.shape[1])).cpu()
         basename = os.path.basename(path)
+        
+        # Create a dummy style vector if not provided
+        if style_vector is None:
+            # Create a dummy style vector with the expected shape
+            # The shape should match what's expected by self.style_proj
+            # Based on the error, it seems the expected shape would be [batch_size, style_dim]
+            style_vector = torch.zeros(1, 256).cpu()  # Adjust the size as needed
 
         if self.n_speakers > 0:
             g = self.emb_g(sid).unsqueeze(-1)
@@ -133,7 +113,7 @@ class CustomSynthesizerTrn(SynthesizerTrn):
 
         torch.onnx.export(
             self.enc_p,
-            (x, x_lengths, tone, language, bert, ja_bert, en_bert, g),
+            (x, x_lengths, tone, language, bert, ja_bert, en_bert, g, style_vector),  # Add style_vector here
             f"onnx/{basename}/{basename}_enc_p.onnx",
             input_names=[
                 "x",
@@ -144,6 +124,7 @@ class CustomSynthesizerTrn(SynthesizerTrn):
                 "bert_1",
                 "bert_2",
                 "g",
+                "style_vector",  # Add style_vector as input name
             ],
             output_names=["xout", "m_p", "logs_p", "x_mask"],
             dynamic_axes={
@@ -153,6 +134,7 @@ class CustomSynthesizerTrn(SynthesizerTrn):
                 "bert_0": [0],
                 "bert_1": [0],
                 "bert_2": [0],
+                "style_vector": [0],  # Add dynamic axis
                 "xout": [0, 2],
                 "m_p": [0, 2],
                 "logs_p": [0, 2],
@@ -161,9 +143,13 @@ class CustomSynthesizerTrn(SynthesizerTrn):
             verbose=True,
             opset_version=16,
         )
+        
+        # Pass style_vector to enc_p
         x, m_p, logs_p, x_mask = self.enc_p(
-            x, x_lengths, tone, language, bert, ja_bert, en_bert, g=g
+            x, x_lengths, tone, language, bert, ja_bert, en_bert, g=g, style_vector=style_vector
         )
+        
+        # Rest of the code remains the same
         zinput = (
             torch.randn(x.size(0), 2, x.size(2)).to(device=x.device, dtype=x.dtype)
             * noise_scale_w
@@ -235,7 +221,32 @@ def export_onnx(export_path, model_path, config_path, novq, dev, Extra):
     hps = get_hparams_from_file(config_path)
     version = hps.version[0:3]
     enable_emo = False
-    net_g = CustomSynthesizerTrn(
+    BertPaths = [
+        "chinese-roberta-wwm-ext-large",
+        "deberta-v2-large-japanese",
+        "bert-base-japanese-v3",
+    ]
+    if version == "2.0" or (version == "2.1" and novq):
+        from Bert_VITS2.onnx_modules.V200 import SynthesizerTrn, symbols
+    elif version == "2.1" and (not novq):
+        from .V210 import SynthesizerTrn, symbols
+    elif version == "2.2":
+        enable_emo = True
+        if novq and dev:
+            from .V220_novq_dev import SynthesizerTrn, symbols
+        else:
+            from .V220 import SynthesizerTrn, symbols
+    elif version == "2.3":
+        from .V230 import SynthesizerTrn, symbols
+
+        BertPaths[1] = "deberta-v2-large-japanese-char-wwm"
+    elif version == "2.4":
+        enable_emo = True
+        if Extra == "chinese":
+            from .V240_ZH import SynthesizerTrn, symbols
+        if Extra == "japanese":
+            from .V240_JP import SynthesizerTrn, symbols
+    net_g = SynthesizerTrn(
         len(symbols),
         hps.data.filter_length // 2 + 1,
         hps.train.segment_size // hps.data.hop_length,
@@ -286,7 +297,7 @@ if __name__ == "__main__":
     config_file = "jvnv-F1-jp/config.json"
     style_file = "jvnv-F1-jp/style_vectors.npy"
     assets_root = Path("model_assets")
-    export_path = assets_root / "BertVits"
+    export_path = "BertVits"
     novq = False
     dev = False
     Extra = "japanese" 
@@ -294,4 +305,13 @@ if __name__ == "__main__":
         os.makedirs("onnx")
     if not os.path.exists(f"onnx/{export_path}"):
         os.makedirs(f"onnx/{export_path}")
-    export_onnx(export_path, assets_root / model_file, assets_root / config_file, novq, dev, Extra)
+    
+    # Pass the style vector path to the export_onnx function
+    export_onnx(
+        export_path, 
+        assets_root / model_file, 
+        assets_root / config_file, 
+        novq, 
+        dev, 
+        Extra
+    )

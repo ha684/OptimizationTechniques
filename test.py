@@ -1,7 +1,8 @@
-import ray
+import onnxruntime as ort
 
+# Load the model
+enc_session = ort.InferenceSession("Bert_VITS2/onnx/BertVits/BertVits_enc_p.onnx")
 
-dataset = ray.data.read_csv()
-
-
-trainer = ray.train.torch.TorchTrainer
+# Get the input names
+input_names = [input.name for input in enc_session.get_inputs()]
+print("Expected inputs:", input_names)
