@@ -290,3 +290,13 @@ Dù hiệu năng ONNX không bằng compile trong thử nghiệm này, ONNX vẫ
 - ❗ **Khác biệt về kết quả**: Do backend khác nhau, ONNX có thể cho kết quả hơi khác với PyTorch (đặc biệt với float32 → float16).
 - ❗ **Cần thêm bước xử lý dữ liệu**: Các tensor đầu vào cần được convert sang `numpy`, khác với workflow PyTorch.
 ---
+
+## 🙏 Credits & Acknowledgements
+
+<div align="center">
+
+[![Style-Bert-VITS2](https://img.shields.io/badge/Style--Bert--VITS2-181717?style=for-the-badge&logo=github&logoColor=white)](https://github.com/litagin02/Style-Bert-VITS2)
+
+Dự án này dựa trên ý tưởng và mã nguồn của **StyleBertVits2** được phát triển bởi [litagin02](https://github.com/litagin02).
+
+</div>
